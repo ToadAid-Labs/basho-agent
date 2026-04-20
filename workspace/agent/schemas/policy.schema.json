@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "workspace-agent-policy.schema.json",
+  "title": "Workspace Policy",
+  "type": "object",
+  "required": ["name", "version", "kind", "last_updated"],
+  "properties": {
+    "name": { "type": "string" },
+    "version": { "type": "string" },
+    "kind": { "type": "string", "const": "protocol" },
+    "last_updated": { "type": "string" }
+  },
+  "additionalProperties": true
+}
+

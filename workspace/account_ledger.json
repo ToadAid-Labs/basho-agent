@@ -1,0 +1,11 @@
+{
+  "user_id": 6095539526,
+  "account_name": "Main Paper Trading Account",
+  "last_updated": "2026-04-20T14:30:00Z",
+  "balance": {
+    "total_equity_usd": 10000.00,
+    "cash_usd": 10000.00
+  },
+  "positions": [],
+  "trade_history": []
+}

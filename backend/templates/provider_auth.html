@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenAI Access - Crypto Trading Bot</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #e0e0e0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .auth-card {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 40px;
+            border-radius: 12px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            width: 100%;
+            max-width: 460px;
+        }
+
+        h1 {
+            margin-bottom: 14px;
+            background: linear-gradient(90deg, #00d4ff, #7b2cbf);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        p {
+            color: #aaa;
+            line-height: 1.5;
+            margin-bottom: 24px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #bbb;
+        }
+
+        input {
+            width: 100%;
+            padding: 12px 16px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(255, 255, 255, 0.05);
+            color: white;
+            outline: none;
+            margin-bottom: 18px;
+        }
+
+        input:focus {
+            border-color: #00d4ff;
+        }
+
+        .divider {
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            margin: 30px 0;
+        }
+
+        .actions {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            padding: 12px 22px;
+            border-radius: 8px;
+            border: none;
+            background: linear-gradient(90deg, #00d4ff, #7b2cbf);
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+            text-decoration: none;
+        }
+
+        .link {
+            color: #aaa;
+            text-decoration: none;
+        }
+
+        .error {
+            color: #ff9b9b;
+            margin-bottom: 16px;
+        }
+
+        .secondary {
+            background: rgba(255, 255, 255, 0.08);
+        }
+    </style>
+</head>
+<body>
+    <div class="auth-card">
+        <h1>OpenAI Access</h1>
+        <p>Use an API key for normal OpenAI API models, or sign in with ChatGPT to store Codex OAuth tokens.</p>
+        {% if error %}
+        <div class="error">{{ error }}</div>
+        {% endif %}
+        <form method="POST">
+            <label for="api_key">OpenAI API Key</label>
+            <input type="password" id="api_key" name="api_key" autocomplete="off" required autofocus>
+            <div class="actions">
+                <button type="submit" class="btn">Save Key</button>
+                <a href="/" class="link">Cancel</a>
+            </div>
+        </form>
+        <div class="divider"></div>
+        <p>Codex OAuth uses the same PKCE flow as Codex/OpenClaw. If the browser cannot return to this app, paste the final callback URL or authorization code below.</p>
+        <div class="actions">
+            <a href="/auth/openai/oauth" class="btn secondary">Sign in with ChatGPT</a>
+        </div>
+        <form method="POST" action="/auth/openai/oauth/complete" style="margin-top: 18px;">
+            <label for="callback_value">Callback URL or Code</label>
+            <input type="password" id="callback_value" name="callback_value" autocomplete="off">
+            <div class="actions">
+                <button type="submit" class="btn secondary">Complete OAuth</button>
+            </div>
+        </form>
+    </div>
+</body>
+</html>

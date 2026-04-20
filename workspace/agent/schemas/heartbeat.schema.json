@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "workspace-agent-heartbeat.schema.json",
+  "title": "Workspace Heartbeat",
+  "type": "object",
+  "required": ["name", "version", "kind", "ttl_seconds", "last_updated"],
+  "properties": {
+    "name": { "type": "string" },
+    "version": { "type": "string" },
+    "kind": { "type": "string", "const": "live_state" },
+    "ttl_seconds": { "type": "integer", "minimum": 1 },
+    "last_updated": { "type": "string" }
+  },
+  "additionalProperties": true
+}
+

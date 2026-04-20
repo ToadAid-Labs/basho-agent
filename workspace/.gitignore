@@ -1,0 +1,6 @@
+# Keep the workspace convention, but do not commit private working data.
+agent_memory/*
+scratch/*
+
+!agent_memory/README.md
+!scratch/README.md

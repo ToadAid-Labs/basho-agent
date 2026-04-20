@@ -1,0 +1,17 @@
+[Unit]
+Description=AI Crypto Trading Web Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User={{USER}}
+WorkingDirectory={{WORKING_DIRECTORY}}
+ExecStart={{WORKING_DIRECTORY}}/venv/bin/python3 backend/app.py
+Restart=always
+RestartSec=10
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=crypto-dashboard
+
+[Install]
+WantedBy=multi-user.target

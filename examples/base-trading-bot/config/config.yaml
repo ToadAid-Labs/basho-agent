@@ -1,0 +1,41 @@
+# Trading Bot Configuration
+
+# API Keys
+dexscreener:
+  api_key: ""  # Optional, can be left empty for basic access
+
+# 1inch API for swap execution
+uniswap:
+  api_url: "https://api.1inch.dev/base"
+  api_key: ""  # Get free key from app.1inch.dev
+
+# Trading Parameters
+trading:
+  # USDC contract on Base
+  usdc_address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+  # WETH contract on Base
+  weth_address: "0x4200000000000000000000000000000000000006"
+  # Initial capital
+  capital_usd: 1000
+  # Max trade size
+  max_trade_size_usd: 50
+  # Slippage tolerance
+  slippage_bps: 50  # 0.5%
+
+# Monitoring
+monitoring:
+  # Price refresh interval (seconds)
+  price_refresh_interval: 60
+  # Minimum liquidity for trading
+  min_liquidity_usd: 1000
+  # Minimum 24h volume for trading
+  min_volume_usd: 100
+
+# Trading Strategy
+strategy:
+  # Trade USDC to WETH (sell stablecoins for tokens)
+  action: "sell_usdc_for_weth"
+  # Take profit percentage
+  take_profit_percent: 5
+  # Stop loss percentage
+  stop_loss_percent: 2
