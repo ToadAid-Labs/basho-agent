@@ -123,12 +123,18 @@ def verify_alpha_wallet(address: str, chain: str = "ethereum") -> str:
         balance_raw = _run_twak(["balance", "--address", address, "--chain", chain, "--json"])
         if balance_raw.startswith("[error]"):
             return balance_raw
-        
+
         # 2. Analyze the tokens held
         # If the wallet holds many "gems" or high-gainers, it's a high-conviction alpha wallet.
-        return f"Wallet Analysis for {address} on {chain}:\n{balance_raw}\n\nConclusion: Wallet holds significant positions in trending assets. High conviction alpha candidate."
+        return (
+            f"Wallet Analysis for {address} on {chain}:\n"
+            f"{balance_raw}\n\n"
+            "Conclusion: Wallet holds significant positions in trending assets. "
+            "High conviction alpha candidate."
+        )
     except Exception as e:
-        return f"[error] Failed to analyze wallet {address}: {str(e)}"
+        logger.exception("Failed to verify alpha wallet")
+        return f"[error] Failed to verify wallet: {e}"
 
 @register_tool(
     name="add_alpha_wallet",

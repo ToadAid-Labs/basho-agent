@@ -5,7 +5,7 @@ import threading
 import os
 import sys
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 
 from core.agent import Agent
@@ -40,12 +40,11 @@ class PIDLock:
         if self.lock_file.exists():
             self.lock_file.unlink()
 
-
+# Global registry for background processes
 class ProcessRegistry:
-    """Global registry for background processes."""
     _instance = None
     _lock = threading.Lock()
-    
+
     def __new__(cls):
         with cls._lock:
             if cls._instance is None:
@@ -58,7 +57,7 @@ class ProcessRegistry:
             self.processes[name] = {
                 **data,
                 "start_time": datetime.now().isoformat(),
-                "status": "running"
+                "status": "running",
             }
 
     def update(self, name: str, status: str, result: Optional[str] = None):
@@ -71,44 +70,35 @@ class ProcessRegistry:
 
     def get_active(self) -> List[Dict[str, Any]]:
         with self._lock:
-            # Clean up old finished processes (older than 1 hour)
             now = datetime.now()
-            to_delete = []
-            for name, p in self.processes.items():
-                if p["status"] != "running":
-                    update_time = datetime.fromisoformat(p.get("last_update", p["start_time"]))
-                    # Fixed: proper cleanup logic
-                    if (now - update_time).total_seconds() > 3600:  # 1 hour
+            to_delete: list[str] = []
+            for name, process in self.processes.items():
+                if process["status"] != "running":
+                    update_time = datetime.fromisoformat(process.get("last_update", process["start_time"]))
+                    if now - update_time > timedelta(hours=1):
                         to_delete.append(name)
-            
-            # Delete old processes
+
             for name in to_delete:
                 del self.processes[name]
 
-            return [p for p in self.processes.values() if p["status"] == "running"]
+            return [process for process in self.processes.values() if process["status"] == "running"]
 
     def get_all(self) -> Dict[str, Any]:
         with self._lock:
             return self.processes.copy()
 
-
-# Create global registry instance
 registry = ProcessRegistry()
 
-
-def _extract_json(text: str) -> Optional[Dict[str, Any]]:
+def _extract_json(text: str) -> Dict[str, Any]:
     """Extract JSON object from a string that might contain other text."""
-    if not text:
-        return None
     try:
         start = text.find("{")
         end = text.rfind("}") + 1
-        if start != -1 and end > start:
+        if start != -1 and end != 0:
             return json.loads(text[start:end])
-        return None
-    except json.JSONDecodeError:
-        return None
-
+        return {}
+    except:
+        return {}
 
 def run_autonomous_cycle(target_chat_id: int):
     """
@@ -133,30 +123,22 @@ def run_autonomous_cycle(target_chat_id: int):
         alpha_report = researcher.chat("Generate a concise daily alpha report for the top 3 crypto assets. Do not use tools if you already have the news.")
         logger.info("Alpha report generated.")
 
-        # 2. Scan Symbols - use from config or fallback
-        try:
-            symbols = TRADING_SYMBOLS[:10] if TRADING_SYMBOLS else ["BTC", "ETH", "SOL"]
-        except:
-            symbols = ["BTC", "ETH", "SOL"]
-        
+        # 2. Scan Symbols
+        symbols = ["BTC", "ETH", "SOL"] 
         proposals_count = 0
         
         for symbol in symbols:
             try:
                 logger.info(f"Analyzing {symbol}...")
                 indicators_raw = researcher.chat(f"Get pro indicators for {symbol}. Return ONLY the JSON output.")
-                indicators = _extract_json(indicators_raw) or {}
+                indicators = _extract_json(indicators_raw)
                 
-                trend = indicators.get("trend", "")
-                trend_strength = indicators.get("trend_strength", "")
-                
-                if trend == "UP" or "STRONG" in str(trend_strength):
+                if indicators.get("trend") == "UP" or "STRONG" in indicators.get("trend_strength", ""):
                     # 3. Get Swing Setup
                     setup_raw = researcher.chat(f"Generate a swing trade setup for {symbol}. Return ONLY the JSON output.")
-                    setup = _extract_json(setup_raw) or {}
+                    setup = _extract_json(setup_raw)
                     
-                    setup_quality = setup.get("setup_quality", "")
-                    if "HIGH" in setup_quality or "PREMIUM" in setup_quality:
+                    if "HIGH" in setup.get("setup_quality", "") or "PREMIUM" in setup.get("setup_quality", ""):
                         # 4. Phase A: Risk Manager Verification
                         risk_prompt = (
                             f"I found a high-quality swing setup for {symbol}.\n"
@@ -166,7 +148,7 @@ def run_autonomous_cycle(target_chat_id: int):
                         )
                         risk_res = _extract_json(risk_manager.chat(risk_prompt))
 
-                        if risk_res and risk_res.get("propose"):
+                        if risk_res.get("propose"):
                             # 4. Phase B: Alpha Validator (Devil's Advocate)
                             val_prompt = (
                                 f"The Researcher and Risk Manager have APPROVED a trade for {symbol}.\n"
@@ -176,28 +158,26 @@ def run_autonomous_cycle(target_chat_id: int):
                             )
                             val_res = _extract_json(validator.chat(val_prompt))
 
-                            if val_res and val_res.get("approve"):
+                            if val_res.get("approve"):
                                 # 5. Consensus Reached - Store and Notify
                                 store = ProposalStore()
-                                trade_plan = setup.get("trade_plan", {})
-                                
                                 proposal_id = store.add_proposal({
                                     "symbol": symbol,
                                     "setup": setup,
-                                    "reason": f"Council Consensus: {risk_res.get('reason', 'Risk approved')} | Validator: {val_res.get('critique', 'Validator approved')}",
+                                    "reason": f"Council Consensus: {risk_res.get('reason')} | Validator: {val_res.get('critique')}",
                                     "type": "SWING"
                                 })
                                 
                                 msg = (
                                     f"🏛️ **COUNCIL APPROVED PROPOSAL**\n\n"
-                                    f"Asset: #{symbol} | Quality: {setup.get('setup_quality', 'N/A')}\n\n"
-                                    f"**Risk Mgr**: ✅ {risk_res.get('reason', 'Approved')}\n"
-                                    f"**Validator**: ✅ {val_res.get('critique', 'Approved')}\n\n"
+                                    f"Asset: #{symbol} | Quality: {setup.get('setup_quality')}\n\n"
+                                    f"**Risk Mgr**: ✅ {risk_res.get('reason')}\n"
+                                    f"**Validator**: ✅ {val_res.get('critique')}\n\n"
                                     f"**Plan:**\n"
-                                    f"- Entry: {trade_plan.get('entry_range', 'N/A')}\n"
-                                    f"- Stop: {trade_plan.get('stop_loss', 'N/A')}\n"
-                                    f"- Target: {trade_plan.get('take_profit', 'N/A')}\n"
-                                    f"- RR Ratio: {trade_plan.get('risk_reward_ratio', 'N/A')}\n\n"
+                                    f"- Entry: {setup.get('trade_plan', {}).get('entry_range')}\n"
+                                    f"- Stop: {setup.get('trade_plan', {}).get('stop_loss')}\n"
+                                    f"- Target: {setup.get('trade_plan', {}).get('take_profit')}\n"
+                                    f"- RR Ratio: {setup.get('trade_plan', {}).get('risk_reward_ratio')}\n\n"
                                     f"Council vote is UNANIMOUS. Reply below to execute."
                                 )
                                 
@@ -210,22 +190,17 @@ def run_autonomous_cycle(target_chat_id: int):
                                 proposals_count += 1
                                 logger.info(f"Consensus proposal sent for {symbol}.")
                             else:
-                                critique = val_res.get('critique', 'No reason given') if val_res else 'Validator returned invalid response'
-                                logger.warning(f"Validator REJECTED {symbol}: {critique}")
+                                logger.warning(f"Validator REJECTED {symbol}: {val_res.get('critique')}")
             except Exception as e:
                 logger.error(f"Error in cycle for {symbol}: {e}")
 
         registry.update(process_id, "completed", f"Found {proposals_count} council-approved opportunities.")
         if proposals_count == 0:
-            send_telegram_message(
-                target_chat_id, 
-                "🔍 **Council Cycle Complete**\n\nNo trade setups reached a 100% consensus today. The Validator rejected weaker setups to protect your capital. Next scan in 4 hours."
-            )
+            send_telegram_message(target_chat_id, "🔍 **Council Cycle Complete**\n\nNo trade setups reached a 100% consensus today. The Validator rejected weaker setups to protect your capital. Next scan in 4 hours.")
 
     except Exception as e:
         logger.error(f"Failed autonomous cycle: {e}")
         registry.update(process_id, "failed", str(e))
-
 
 def autonomous_orchestrator_loop():
     """Background loop for the autonomous orchestrator."""
@@ -244,10 +219,7 @@ def autonomous_orchestrator_loop():
                 if files:
                     # Extract ID from user_12345.json
                     filename = files[0].name
-                    try:
-                        chat_id = int(filename.split("_")[1].split(".")[0])
-                    except (IndexError, ValueError) as e:
-                        logger.error(f"Failed to parse chat_id from {filename}: {e}")
+                    chat_id = int(filename.split("_")[1].split(".")[0])
             
             if chat_id:
                 run_autonomous_cycle(chat_id)
@@ -259,14 +231,3 @@ def autonomous_orchestrator_loop():
         except Exception as e:
             logger.error(f"Error in autonomous orchestrator loop: {e}")
             time.sleep(300)
-
-
-# Entry point for running as standalone script
-if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    
-    # If run directly, start the orchestrator
-    autonomous_orchestrator_loop()
