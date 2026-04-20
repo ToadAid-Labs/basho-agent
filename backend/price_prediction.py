@@ -150,6 +150,7 @@ class TechnicalIndicators:
 
         # RSI
         rsi = df['rsi'].iloc[-1]
+        signals['rsi'] = float(rsi)
         signals['rsi_overbought'] = float(rsi > 70)
         signals['rsi_oversold'] = float(rsi < 30)
         signals['rsi_neutral'] = float(30 <= rsi <= 70)
@@ -164,6 +165,13 @@ class TechnicalIndicators:
         signals['bb_lower'] = float(df['bb_lower'].iloc[-1])
         signals['price_at_bb_upper'] = float(close >= df['bb_upper'].iloc[-1])
         signals['price_at_bb_lower'] = float(close <= df['bb_lower'].iloc[-1])
+
+        # Volatility and trend context
+        signals['volatility_20'] = float(df['volatility_20'].iloc[-1])
+        signals['atr'] = float(df['atr'].iloc[-1])
+        signals['close'] = float(close)
+        signals['volatility_pct'] = float(df['volatility_20'].iloc[-1] / close) if close else 0.0
+        signals['atr_pct'] = float(df['atr'].iloc[-1] / close) if close else 0.0
 
         # Volume
         signals['volume_surge'] = float(df['volume_ratio'].iloc[-1] > 2)
@@ -429,35 +437,79 @@ class PricePredictionModel:
         return expected_return_pct
 
     def get_trading_signals(self, df: pd.DataFrame, hours_ahead: int = 1,
-                          threshold: float = 0.02, confidence_modifier: float = 1.0) -> Dict[str, float]:
+                          threshold: float = 0.02, confidence_modifier: float = 1.0,
+                          rsi_overbought_threshold: float = 70.0,
+                          rsi_oversold_threshold: float = 30.0,
+                          max_volatility_pct: float = 0.08,
+                          conservative_mode: bool = True) -> Dict[str, float]:
         """
-        Generate trading signals based on prediction
+        Generate trading signals based on prediction.
 
-        Args:
-            df: Current DataFrame with features
-            hours_ahead: Prediction horizon
-            threshold: Minimum return threshold for signal
-            confidence_modifier: Multiplier from historical accuracy
-
-        Returns:
-            Dictionary of trading signals
+        Adds a conservative guardrail layer so the model does not issue BUY
+        purely from expected return when the market is already overbought or
+        unusually volatile.
         """
         expected_return = self.calculate_expected_return(df, hours_ahead)
+        technicals = TechnicalIndicators.get_current_signals(df)
 
-        signals = {
-            'expected_return': expected_return,
-            'action': 'HOLD'
+        rsi = float(technicals.get('rsi', 50.0))
+        volatility_pct = float(technicals.get('volatility_pct', 0.0))
+        atr_pct = float(technicals.get('atr_pct', 0.0))
+        macd_bullish = bool(technicals.get('macd_bullish', 0.0))
+        price_at_bb_upper = bool(technicals.get('price_at_bb_upper', 0.0))
+        price_at_bb_lower = bool(technicals.get('price_at_bb_lower', 0.0))
+
+        action = 'HOLD'
+        reason = 'threshold_not_met'
+        threshold_pct = threshold * 100.0
+        high_volatility = max(volatility_pct, atr_pct) > max_volatility_pct
+
+        if expected_return > threshold_pct:
+            action = 'BUY'
+            reason = 'predicted_return_above_threshold'
+        elif expected_return < -threshold_pct:
+            action = 'SELL'
+            reason = 'predicted_return_below_threshold'
+
+        if conservative_mode:
+            if action == 'BUY':
+                if rsi >= rsi_overbought_threshold:
+                    action = 'HOLD'
+                    reason = 'buy_veto_overbought_rsi'
+                elif price_at_bb_upper:
+                    action = 'HOLD'
+                    reason = 'buy_veto_upper_bollinger'
+                elif high_volatility and not macd_bullish:
+                    action = 'HOLD'
+                    reason = 'buy_veto_high_volatility'
+
+            elif action == 'SELL':
+                if rsi <= rsi_oversold_threshold:
+                    action = 'HOLD'
+                    reason = 'sell_veto_oversold_rsi'
+                elif price_at_bb_lower:
+                    action = 'HOLD'
+                    reason = 'sell_veto_lower_bollinger'
+
+        base_confidence = min(abs(expected_return) / threshold_pct, 1.0) if threshold_pct > 0 else 0.0
+
+        if action == 'HOLD' and reason.startswith(('buy_veto_', 'sell_veto_')):
+            base_confidence *= 0.5
+        if high_volatility:
+            base_confidence *= 0.8
+
+        confidence = round(max(0.0, min(base_confidence * confidence_modifier, 1.0)), 3)
+
+        return {
+            'expected_return': round(expected_return, 4),
+            'action': action,
+            'confidence': confidence,
+            'reason': reason,
+            'rsi': round(rsi, 2),
+            'volatility_pct': round(volatility_pct * 100, 4),
+            'atr_pct': round(atr_pct * 100, 4),
+            'conservative_mode': float(conservative_mode),
         }
-
-        if expected_return > threshold:
-            signals['action'] = 'BUY'
-        elif expected_return < -threshold:
-            signals['action'] = 'SELL'
-
-        base_confidence = min(abs(expected_return) / threshold, 1.0)
-        signals['confidence'] = round(base_confidence * confidence_modifier, 3)
-
-        return signals
 
 
 class MarketStateAnalyzer:
