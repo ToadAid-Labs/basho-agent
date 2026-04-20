@@ -1011,7 +1011,7 @@ class TelegramBot:
             if len(parts) < 2:
                 await update.message.reply_text(
                     "❌ Format: `SYMBOL AMOUNT`\n"
-                    "For BUY, amount is USD, e.g. `BTC 500` buys $500 of BTC.\n"
+                    "For BUY, amount is USD, e.g. `BTC 500`.\n"
                     "For SELL, amount is coin quantity, e.g. `BTC 0.01`."
                 )
                 return
@@ -1079,3 +1079,5 @@ class TelegramBot:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     TelegramBot().run()
+
+    
