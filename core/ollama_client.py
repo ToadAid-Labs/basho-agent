@@ -1,5 +1,6 @@
 import os
-from typing import Any
+import json
+from typing import Any, Generator
 
 import requests
 from dotenv import load_dotenv
@@ -54,6 +55,67 @@ class OllamaClient:
         data = resp.json()
         return OllamaResponse.from_api(data, api_tools)
 
+    def create_message_stream(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        system_prompt: str | None = None,
+        max_tokens: int = 4096,
+    ) -> Generator[Any, None, None]:
+        """Stream chat messages from Ollama."""
+        api_tools = self._to_api_tools(tools)
+        api_messages = _build_messages(messages, system_prompt)
+
+        payload = {
+            "model": self.model,
+            "messages": api_messages,
+            "stream": True,
+            "tools": api_tools,
+            "options": {"num_predict": max_tokens},
+        }
+
+        try:
+            resp = requests.post(
+                f"{self.base_url}/api/chat",
+                json=payload,
+                timeout=self.timeout,
+                stream=True,
+            )
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            raise RuntimeError(f"Ollama stream request failed: {e}") from e
+
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            message = data.get("message", {})
+            
+            # Text fragment
+            content = message.get("content", "")
+            if content:
+                yield TextBlock(text=content)
+            
+            # Tool calls (usually only at the end or in specific chunks)
+            for tc in message.get("tool_calls", []):
+                fn = tc.get("function", {})
+                args = fn.get("arguments", {})
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError:
+                        args = {"_raw": args}
+                
+                yield ToolUseBlock(
+                    id=tc.get("id", ""),
+                    name=fn.get("name", ""),
+                    input=args
+                )
+
     @staticmethod
     def _to_api_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert Claude-style tool definitions to Ollama function format."""
@@ -101,7 +163,6 @@ class OllamaResponse:
             raw_args = fn.get("arguments", {})
             # arguments may be a dict or a JSON string
             if isinstance(raw_args, str):
-                import json
                 try:
                     raw_args = json.loads(raw_args)
                 except Exception:  # noqa: BLE001

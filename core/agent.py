@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 
 from rich.console import Console
 
@@ -199,6 +199,93 @@ class Agent:
                     self.system_prompt += f"\n--- Strategy File {i} ---\n{note}\n"
         except Exception as e:
             logger.error(f"Failed to load strategy memory: {e}")
+
+    def chat_stream(self, user_input: str) -> Generator[dict[str, Any], None, None]:
+        """Generator that yields chat tokens and tool activity events."""
+        self.messages.append({"role": "user", "content": user_input})
+
+        final_text = ""
+        for _ in range(MAX_ITERATIONS):
+            try:
+                # Only Ollama currently supports create_message_stream in this simplified implementation
+                if hasattr(self.client, "create_message_stream") and self.provider == ModelProvider.OLLAMA:
+                    stream = self.client.create_message_stream(
+                        messages=self.messages,
+                        tools=self.tool_definitions,
+                        system_prompt=self.system_prompt,
+                    )
+                else:
+                    # Fallback for providers without streaming (returns single response)
+                    response = self.client.create_message(
+                        messages=self.messages,
+                        tools=self.tool_definitions,
+                        system_prompt=self.system_prompt,
+                    )
+                    # Convert static response to a tiny generator for consistent loop
+                    def _gen():
+                        yield from response.content
+                    stream = _gen()
+
+            except Exception as e:
+                logger.error("API error in stream: %s", e)
+                yield {"type": "error", "content": f"API error: {e}"}
+                return
+
+            response_text = ""
+            assistant_content: list[dict[str, Any]] = []
+            tool_results: list[dict[str, Any]] = []
+
+            for block in stream:
+                if block.type == "text":
+                    response_text += block.text
+                    assistant_content.append({"type": "text", "text": block.text})
+                    yield {"type": "token", "content": block.text}
+                elif block.type == "thought":
+                    assistant_content.append({"type": "thought", "text": block.text})
+                    # We don't yield thoughts to the main chat pane yet, but could to a log
+                elif block.type == "tool_use":
+                    tool_name = block.name
+                    tool_input = block.input
+                    tool_use_id = block.id
+                    
+                    yield {"type": "tool_start", "name": tool_name, "input": tool_input}
+
+                    assistant_content.append(
+                        {
+                            "type": "tool_use",
+                            "id": tool_use_id,
+                            "name": tool_name,
+                            "input": tool_input,
+                            "thought_signature": getattr(block, "thought_signature", None)
+                        }
+                    )
+
+                    self.console.print(f"[dim]Calling tool: {tool_name}[/dim]")
+                    result = execute_tool(tool_name, tool_input)
+                    
+                    yield {"type": "tool_end", "name": tool_name, "result": result}
+
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_use_id,
+                            "name": tool_name,
+                            "content": result,
+                        }
+                    )
+
+            if assistant_content:
+                self.messages.append({"role": "assistant", "content": assistant_content})
+
+            if not tool_results:
+                final_text = response_text.strip()
+                save_session_for_provider(self.sid, self.messages, self.provider.value)
+                yield {"type": "final_response", "content": final_text}
+                return
+
+            self.messages.append({"role": "user", "content": tool_results})
+
+        yield {"type": "error", "content": "Error: tool loop exceeded maximum iterations."}
 
     def chat(self, user_input: str) -> str:
         """Send a message to the agent, handle tool calls, return the final text response."""

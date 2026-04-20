@@ -577,3 +577,4 @@ class MarketStateAnalyzer:
             return 'MEDIUM'
         else:
             return 'HIGH'
+

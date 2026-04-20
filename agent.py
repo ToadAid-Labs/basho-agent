@@ -143,5 +143,31 @@ def bot(
         raise typer.Exit(code=1)
 
 
+@app.command()
+def tui(
+    session_id: str = typer.Option(None, "--session", "-s", help="Resume a specific session ID"),
+    provider: str = typer.Option(None, "--provider", "-p", help="Model provider (anthropic, ollama, gemini, openai, openai-codex)"),
+) -> None:
+    """Start the Textual TUI interface."""
+    model_provider = None
+    if provider:
+        try:
+            model_provider = ModelProvider(provider.lower())
+        except ValueError:
+            console.print(f"[red]Error:[/] Invalid provider '{provider}'. Choose from: anthropic, ollama, gemini, openai, openai-codex")
+            raise typer.Exit(code=1)
+
+    if model_provider is None:
+        model_provider = get_provider()
+
+    try:
+        from ui.chat_tui_v2 import run_tui
+        run_tui(session_id=session_id, provider=model_provider)
+    except Exception as e:
+        console.print(f"[bold red]Error:[/] {e}")
+        logger.exception("Error in TUI")
+        raise typer.Exit(code=1)
+
+
 if __name__ == "__main__":
     app()
