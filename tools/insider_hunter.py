@@ -127,6 +127,8 @@ def verify_alpha_wallet(address: str, chain: str = "ethereum") -> str:
         # 2. Analyze the tokens held
         # If the wallet holds many "gems" or high-gainers, it's a high-conviction alpha wallet.
         return f"Wallet Analysis for {address} on {chain}:\n{balance_raw}\n\nConclusion: Wallet holds significant positions in trending assets. High conviction alpha candidate."
+    except Exception as e:
+        return f"[error] Failed to analyze wallet {address}: {str(e)}"
 
 @register_tool(
     name="add_alpha_wallet",
