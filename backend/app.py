@@ -550,9 +550,9 @@ def initialize_app():
     alert_thread = threading.Thread(target=alert_processor_loop, daemon=True)
     alert_thread.start()
     
-    from core.orchestrator import autonomous_orchestrator_loop
-    orchestrator_thread = threading.Thread(target=autonomous_orchestrator_loop, daemon=True)
-    orchestrator_thread.start()
+    # from core.orchestrator import autonomous_orchestrator_loop
+    # orchestrator_thread = threading.Thread(target=autonomous_orchestrator_loop, daemon=True)
+    # orchestrator_thread.start()
 
 def create_admin_user():
     """Create admin user if it doesn't exist."""
