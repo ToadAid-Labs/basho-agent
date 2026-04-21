@@ -193,7 +193,7 @@ class GeminiClient:
                             function_call=types.FunctionCall(
                                 name=block["name"],
                                 args=block["input"],
-                                id=sig # Also send as 'id' for legacy compatibility if needed
+                                id=_function_call_id(block, sig)
                             )
                         ))
                     elif block.get("type") == "tool_result":
@@ -262,9 +262,9 @@ class GeminiClient:
                             name=block["name"],
                             args=block["input"]
                         )
-                        # Set id/thought_signature if available in the proto
+                        # FunctionCall.id is text in some SDK versions; thought_signature is binary.
                         if hasattr(fc, "id"):
-                            fc.id = sig
+                            fc.id = _function_call_id(block, sig)
                         
                         p = proto.Part(function_call=fc)
                         if hasattr(p, "thought_signature"):
@@ -370,9 +370,10 @@ def _extract_blocks(response) -> list[Any]:
                 elif not isinstance(args, dict):
                     args = {}
                 
-                # Capture thought_signature OR id from the proto
-                # In many Gemini versions, 'id' in the proto maps to 'thought_signature'
-                thought_sig = getattr(fn_call, "thought_signature", None)
+                # Capture the binary thought_signature from the Part when available.
+                thought_sig = getattr(part, "thought_signature", None)
+                if not thought_sig:
+                    thought_sig = getattr(fn_call, "thought_signature", None)
                 if not thought_sig:
                     thought_sig = getattr(fn_call, "id", None)
                 thought_sig = _encode_thought_signature(thought_sig)
@@ -394,6 +395,18 @@ def _extract_finish_reason(response) -> str | None:
             # 12 is MALFORMED_PROMPT in some versions, but we should treat it as a stop if we can't do more
             return str(finish_reason)
     return None
+
+
+def _function_call_id(block: dict[str, Any], sig: Any) -> str:
+    """Return a text-safe function call id; never pass raw signature bytes as id."""
+    call_id = block.get("id")
+    if isinstance(call_id, str) and call_id:
+        return call_id
+    if isinstance(sig, bytes):
+        return base64.b64encode(sig).decode("ascii")
+    if isinstance(sig, str) and sig:
+        return sig
+    return f"call_{uuid.uuid4().hex[:12]}"
 
 def _empty_response_message(response) -> str:
     finish_reason = _extract_finish_reason(response) or "unknown"
