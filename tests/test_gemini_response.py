@@ -60,7 +60,16 @@ def test_gemini_response_preserves_thought_signature_as_json_safe_text():
     response = GeminiResponse(FunctionCallGeminiResponse(FunctionCallPart(thought_signature=b"sig-bytes")))
 
     assert response.content[0].type == "tool_use"
+    assert response.content[0].id == "call-1"
     assert response.content[0].thought_signature == base64.b64encode(b"sig-bytes").decode("ascii")
+
+
+def test_gemini_response_does_not_treat_function_call_id_as_signature():
+    response = GeminiResponse(FunctionCallGeminiResponse(FunctionCallPart(call_id="m5ag5amp")))
+
+    assert response.content[0].type == "tool_use"
+    assert response.content[0].id == "m5ag5amp"
+    assert response.content[0].thought_signature is None
 
 
 def test_gemini_content_builder_restores_thought_signature_bytes():
