@@ -250,6 +250,7 @@ class Agent:
             response_text = ""
             assistant_content: list[dict[str, Any]] = []
             tool_results: list[dict[str, Any]] = []
+            direct_tool_results: list[dict[str, str]] = []
 
             for block in stream:
                 if block.type == "text":
@@ -263,18 +264,9 @@ class Agent:
                     tool_name = block.name
                     tool_input = block.input
                     tool_use_id = block.id
+                    thought_signature = getattr(block, "thought_signature", None)
                     
                     yield {"type": "tool_start", "name": tool_name, "input": tool_input}
-
-                    assistant_content.append(
-                        {
-                            "type": "tool_use",
-                            "id": tool_use_id,
-                            "name": tool_name,
-                            "input": tool_input,
-                            "thought_signature": getattr(block, "thought_signature", None)
-                        }
-                    )
 
                     self.console.print(f"[dim]Calling tool: {tool_name}[/dim]")
                     tool_start = time.time()
@@ -283,14 +275,29 @@ class Agent:
                     
                     yield {"type": "tool_end", "name": tool_name, "result": result}
 
-                    tool_results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": tool_use_id,
-                            "name": tool_name,
-                            "content": result,
-                        }
-                    )
+                    if _should_return_gemini_tool_directly(self.provider, thought_signature):
+                        direct_tool_results.append({"name": tool_name, "content": result})
+                        assistant_content.append(
+                            {"type": "text", "text": _format_tool_result_text(tool_name, result)}
+                        )
+                    else:
+                        assistant_content.append(
+                            {
+                                "type": "tool_use",
+                                "id": tool_use_id,
+                                "name": tool_name,
+                                "input": tool_input,
+                                "thought_signature": thought_signature
+                            }
+                        )
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tool_use_id,
+                                "name": tool_name,
+                                "content": result,
+                            }
+                        )
 
             if assistant_content:
                 self.messages.append({"role": "assistant", "content": assistant_content})
@@ -298,7 +305,7 @@ class Agent:
             logger.info(f"Iteration {iteration+1} complete in {time.time() - iter_start:.3f}s")
 
             if not tool_results:
-                final_text = response_text.strip()
+                final_text = _format_direct_tool_response(response_text, direct_tool_results)
                 save_session_for_provider(self.sid, self.messages, self.provider.value)
                 logger.info(f"Total request duration: {time.time() - start_request:.3f}s")
                 yield {"type": "final_response", "content": final_text}
@@ -333,6 +340,7 @@ class Agent:
             response_text = ""
             assistant_content: list[dict[str, Any]] = []
             tool_results: list[dict[str, Any]] = []
+            direct_tool_results: list[dict[str, str]] = []
 
             for block in response.content:
                 if block.type == "text":
@@ -344,29 +352,36 @@ class Agent:
                     tool_name = block.name
                     tool_input = block.input
                     tool_use_id = block.id
-                    assistant_content.append(
-                        {
-                            "type": "tool_use",
-                            "id": tool_use_id,
-                            "name": tool_name,
-                            "input": tool_input,
-                            "thought_signature": getattr(block, "thought_signature", None)
-                        }
-                    )
+                    thought_signature = getattr(block, "thought_signature", None)
 
                     self.console.print(f"[dim]Calling tool: {tool_name}[/dim]")
                     tool_start = time.time()
                     result = execute_tool(tool_name, tool_input)
                     logger.info(f"Tool {tool_name} took {time.time() - tool_start:.3f}s")
 
-                    tool_results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": tool_use_id,
-                            "name": tool_name,
-                            "content": result,
-                        }
-                    )
+                    if _should_return_gemini_tool_directly(self.provider, thought_signature):
+                        direct_tool_results.append({"name": tool_name, "content": result})
+                        assistant_content.append(
+                            {"type": "text", "text": _format_tool_result_text(tool_name, result)}
+                        )
+                    else:
+                        assistant_content.append(
+                            {
+                                "type": "tool_use",
+                                "id": tool_use_id,
+                                "name": tool_name,
+                                "input": tool_input,
+                                "thought_signature": thought_signature
+                            }
+                        )
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tool_use_id,
+                                "name": tool_name,
+                                "content": result,
+                            }
+                        )
 
             if assistant_content:
                 self.messages.append({"role": "assistant", "content": assistant_content})
@@ -374,7 +389,7 @@ class Agent:
             logger.info(f"Iteration {iteration+1} complete in {time.time() - iter_start:.3f}s")
 
             if not tool_results:
-                final_text = response_text.strip()
+                final_text = _format_direct_tool_response(response_text, direct_tool_results)
                 save_session_for_provider(self.sid, self.messages, self.provider.value)
                 logger.info(f"Total request duration: {time.time() - start_request:.3f}s")
                 return final_text
@@ -395,6 +410,26 @@ def _build_messages(history: list[dict[dict, Any]]) -> list[dict[str, Any]]:
         elif isinstance(content, list):
             messages.append({"role": role, "content": content})
     return messages
+
+
+def _should_return_gemini_tool_directly(provider: ModelProvider, thought_signature: Any) -> bool:
+    return provider == ModelProvider.GEMINI and not thought_signature
+
+
+def _format_tool_result_text(tool_name: str, result: str) -> str:
+    return f"Tool result from {tool_name}:\n{result}"
+
+
+def _format_direct_tool_response(
+    response_text: str,
+    direct_tool_results: list[dict[str, str]],
+) -> str:
+    parts = []
+    if response_text.strip():
+        parts.append(response_text.strip())
+    for tool_result in direct_tool_results:
+        parts.append(_format_tool_result_text(tool_result["name"], tool_result["content"]))
+    return "\n\n".join(parts).strip()
 
 
 def _build_provider_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

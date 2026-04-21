@@ -185,9 +185,7 @@ class GeminiClient:
                         parts.append(types.Part(thought=block.get("text", "")))
                     elif block.get("type") == "tool_use":
                         # Gemini 3 requires thought_signature to match the one sent by model
-                        sig = _decode_thought_signature(
-                            block.get("thought_signature") or block.get("id")
-                        )
+                        sig = _decode_thought_signature(block.get("thought_signature"))
                         parts.append(types.Part(
                             thought_signature=sig,
                             function_call=types.FunctionCall(
@@ -253,9 +251,7 @@ class GeminiClient:
                             # Fallback to text for thought in legacy if thought field is missing
                             parts.append(proto.Part(text=f"[Thought]: {block.get('text', '')}"))
                     elif block.get("type") == "tool_use":
-                        sig = _decode_thought_signature(
-                            block.get("thought_signature") or block.get("id")
-                        )
+                        sig = _decode_thought_signature(block.get("thought_signature"))
                         
                         # Use explicit proto objects to bypass SDK's dict guessing logic
                         fc = proto.FunctionCall(
@@ -374,12 +370,11 @@ def _extract_blocks(response) -> list[Any]:
                 thought_sig = getattr(part, "thought_signature", None)
                 if not thought_sig:
                     thought_sig = getattr(fn_call, "thought_signature", None)
-                if not thought_sig:
-                    thought_sig = getattr(fn_call, "id", None)
                 thought_sig = _encode_thought_signature(thought_sig)
+                call_id = getattr(fn_call, "id", None)
                     
                 blocks.append(ToolUseBlock(
-                    tool_use_id=thought_sig if thought_sig else f"call_{uuid.uuid4().hex[:12]}",
+                    tool_use_id=call_id or thought_sig or f"call_{uuid.uuid4().hex[:12]}",
                     name=name,
                     tool_input=args,
                     thought_signature=thought_sig
