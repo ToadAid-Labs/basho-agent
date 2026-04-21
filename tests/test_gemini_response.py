@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from core.gemini_client import GeminiClient, GeminiResponse
+from core.gemini_client import GeminiClient, GeminiResponse, _function_call_id
 
 
 class EmptyContent:
@@ -108,3 +108,10 @@ def test_legacy_content_builder_puts_thought_signature_on_part():
 
     assert contents[0]["parts"][0]["thought_signature"] == b"sig-bytes"
     assert "thought_signature" not in contents[0]["parts"][0]["function_call"]
+
+
+def test_function_call_id_does_not_use_raw_binary_signature():
+    raw_signature = b"\xbe\x00sig"
+
+    assert _function_call_id({"id": "call-1"}, raw_signature) == "call-1"
+    assert _function_call_id({}, raw_signature) == base64.b64encode(raw_signature).decode("ascii")
