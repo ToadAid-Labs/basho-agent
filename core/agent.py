@@ -1,4 +1,7 @@
 import logging
+import json
+import os
+import time
 from pathlib import Path
 from typing import Any, Generator
 
@@ -49,6 +52,8 @@ When executing trades, always consider risk management.
 Be concise, practical, and data-driven. Execute the steps needed, then explain the result clearly."""
 
 MAX_ITERATIONS = 50
+DEFAULT_MAX_PROVIDER_MESSAGES = 20
+DEFAULT_MAX_PROVIDER_CHARS = 60_000
 
 ROLES = {
     "researcher": {
@@ -116,6 +121,7 @@ class Agent:
         role: str | None = None,
         history: list[dict[str, Any]] | None = None,
     ):
+        start_init = time.time()
         self.role = role
         self.provider = provider or get_provider()
         self.console = console or Console()
@@ -199,28 +205,38 @@ class Agent:
                     self.system_prompt += f"\n--- Strategy File {i} ---\n{note}\n"
         except Exception as e:
             logger.error(f"Failed to load strategy memory: {e}")
+        
+        logger.info(f"Agent initialized in {time.time() - start_init:.3f}s (SID: {self.sid}, Prompt: {len(self.system_prompt)} chars)")
 
     def chat_stream(self, user_input: str) -> Generator[dict[str, Any], None, None]:
         """Generator that yields chat tokens and tool activity events."""
+        start_request = time.time()
         self.messages.append({"role": "user", "content": user_input})
 
         final_text = ""
-        for _ in range(MAX_ITERATIONS):
+        for iteration in range(MAX_ITERATIONS):
+            iter_start = time.time()
             try:
                 # Only Ollama currently supports create_message_stream in this simplified implementation
                 if hasattr(self.client, "create_message_stream") and self.provider == ModelProvider.OLLAMA:
+                    provider_messages = _build_provider_messages(self.messages)
+                    _log_provider_context(self.messages, provider_messages)
                     stream = self.client.create_message_stream(
-                        messages=self.messages,
+                        messages=provider_messages,
                         tools=self.tool_definitions,
                         system_prompt=self.system_prompt,
                     )
                 else:
                     # Fallback for providers without streaming (returns single response)
+                    llm_start = time.time()
+                    provider_messages = _build_provider_messages(self.messages)
+                    _log_provider_context(self.messages, provider_messages)
                     response = self.client.create_message(
-                        messages=self.messages,
+                        messages=provider_messages,
                         tools=self.tool_definitions,
                         system_prompt=self.system_prompt,
                     )
+                    logger.info(f"LLM call (non-streaming) took {time.time() - llm_start:.3f}s")
                     # Convert static response to a tiny generator for consistent loop
                     def _gen():
                         yield from response.content
@@ -261,7 +277,9 @@ class Agent:
                     )
 
                     self.console.print(f"[dim]Calling tool: {tool_name}[/dim]")
+                    tool_start = time.time()
                     result = execute_tool(tool_name, tool_input)
+                    logger.info(f"Tool {tool_name} took {time.time() - tool_start:.3f}s")
                     
                     yield {"type": "tool_end", "name": tool_name, "result": result}
 
@@ -277,9 +295,12 @@ class Agent:
             if assistant_content:
                 self.messages.append({"role": "assistant", "content": assistant_content})
 
+            logger.info(f"Iteration {iteration+1} complete in {time.time() - iter_start:.3f}s")
+
             if not tool_results:
                 final_text = response_text.strip()
                 save_session_for_provider(self.sid, self.messages, self.provider.value)
+                logger.info(f"Total request duration: {time.time() - start_request:.3f}s")
                 yield {"type": "final_response", "content": final_text}
                 return
 
@@ -289,16 +310,22 @@ class Agent:
 
     def chat(self, user_input: str) -> str:
         """Send a message to the agent, handle tool calls, return the final text response."""
+        start_request = time.time()
         self.messages.append({"role": "user", "content": user_input})
 
         final_text = ""
-        for _ in range(MAX_ITERATIONS):
+        for iteration in range(MAX_ITERATIONS):
+            iter_start = time.time()
             try:
+                llm_start = time.time()
+                provider_messages = _build_provider_messages(self.messages)
+                _log_provider_context(self.messages, provider_messages)
                 response = self.client.create_message(
-                    messages=self.messages,
+                    messages=provider_messages,
                     tools=self.tool_definitions,
                     system_prompt=self.system_prompt,
                 )
+                logger.info(f"LLM call took {time.time() - llm_start:.3f}s")
             except Exception as e:  # noqa: BLE001
                 logger.error("API error: %s", e)
                 return f"API error: {e}"
@@ -328,7 +355,9 @@ class Agent:
                     )
 
                     self.console.print(f"[dim]Calling tool: {tool_name}[/dim]")
+                    tool_start = time.time()
                     result = execute_tool(tool_name, tool_input)
+                    logger.info(f"Tool {tool_name} took {time.time() - tool_start:.3f}s")
 
                     tool_results.append(
                         {
@@ -342,9 +371,12 @@ class Agent:
             if assistant_content:
                 self.messages.append({"role": "assistant", "content": assistant_content})
 
+            logger.info(f"Iteration {iteration+1} complete in {time.time() - iter_start:.3f}s")
+
             if not tool_results:
                 final_text = response_text.strip()
                 save_session_for_provider(self.sid, self.messages, self.provider.value)
+                logger.info(f"Total request duration: {time.time() - start_request:.3f}s")
                 return final_text
 
             self.messages.append({"role": "user", "content": tool_results})
@@ -363,6 +395,68 @@ def _build_messages(history: list[dict[dict, Any]]) -> list[dict[str, Any]]:
         elif isinstance(content, list):
             messages.append({"role": role, "content": content})
     return messages
+
+
+def _build_provider_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Bound provider context without deleting persisted session history."""
+    max_messages = _env_int("AGENT_MAX_PROVIDER_MESSAGES", DEFAULT_MAX_PROVIDER_MESSAGES)
+    max_chars = _env_int("AGENT_MAX_PROVIDER_CHARS", DEFAULT_MAX_PROVIDER_CHARS)
+
+    if max_messages <= 0 and max_chars <= 0:
+        return messages
+
+    selected: list[dict[str, Any]] = []
+    total_chars = 0
+    for msg in reversed(messages):
+        msg_chars = _message_chars(msg)
+        if selected and max_messages > 0 and len(selected) >= max_messages:
+            break
+        if selected and max_chars > 0 and total_chars + msg_chars > max_chars:
+            break
+        selected.append(msg)
+        total_chars += msg_chars
+
+    provider_messages = list(reversed(selected))
+    while provider_messages and _contains_only_tool_results(provider_messages[0]):
+        provider_messages.pop(0)
+    return provider_messages or messages[-1:]
+
+
+def _log_provider_context(
+    all_messages: list[dict[str, Any]],
+    provider_messages: list[dict[str, Any]],
+) -> None:
+    logger.info(
+        "Provider context: %d/%d messages, %d chars",
+        len(provider_messages),
+        len(all_messages),
+        sum(_message_chars(msg) for msg in provider_messages),
+    )
+
+
+def _message_chars(msg: dict[str, Any]) -> int:
+    try:
+        return len(json.dumps(msg, ensure_ascii=False))
+    except (TypeError, ValueError):
+        return len(str(msg))
+
+
+def _contains_only_tool_results(msg: dict[str, Any]) -> bool:
+    content = msg.get("content")
+    if not isinstance(content, list) or not content:
+        return False
+    return all(isinstance(block, dict) and block.get("type") == "tool_result" for block in content)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r; using %d", name, raw, default)
+        return default
 
 
 def _load_workspace_strategy_memory(max_chars_per_file: int = 4000) -> list[str]:
