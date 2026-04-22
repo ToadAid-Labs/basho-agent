@@ -3,6 +3,7 @@ import os
 import time
 import sys
 import json
+import io
 import requests
 import uuid
 import asyncio
@@ -19,10 +20,10 @@ from datetime import datetime
 import telegram
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler, ApplicationHandlerStop
 
 from core.agent import Agent
-from core.provider import ModelProvider, get_provider
+from core.provider import ModelProvider, create_client, get_provider
 
 logger = logging.getLogger(__name__)
 load_dotenv()
@@ -31,6 +32,15 @@ load_dotenv()
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:5000")
 API_TIMEOUT = 15  # seconds
 AGENT_TIMEOUT = int(os.getenv("TELEGRAM_AGENT_TIMEOUT_SECONDS", "900"))
+MAX_TELEGRAM_IMAGE_BYTES = int(os.getenv("TELEGRAM_MAX_IMAGE_BYTES", str(10 * 1024 * 1024)))
+CHART_REQUEST_RE = re.compile(r"\b(chart|candlestick|candle|price\s+chart)\b", re.IGNORECASE)
+SYMBOL_RE = re.compile(r"\b(BTC|ETH|SOL|BNB|XRP|ADA|DOGE|AVAX|LINK|MATIC|ARB|OP|PEPE|WIF|BONK)\b", re.IGNORECASE)
+SYMBOL_ALIASES = {
+    "bitcoin": "BTC",
+    "ethereum": "ETH",
+    "ether": "ETH",
+    "solana": "SOL",
+}
 
 def _get_session_dir() -> Path:
     path = Path.home() / ".agent" / "telegram_sessions"
@@ -211,6 +221,7 @@ class TelegramBot:
         self.backend_url = backend_url
         self.user_sessions: dict[int, dict] = {}
         self.wallet_cache: dict[str, dict[str, Any]] = {}
+        self._handled_chart_messages: set[tuple[int, int]] = set()
 
     def _get_agent(self, chat_id: int) -> Agent:
         """Get or create an Agent for this Telegram user."""
@@ -296,6 +307,10 @@ class TelegramBot:
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages (pass to AI Agent)."""
         chat_id = update.effective_chat.id
+        message_key = self._message_key(update)
+        if message_key in self._handled_chart_messages:
+            raise ApplicationHandlerStop
+
         text = update.message.text.strip()
         
         if not text:
@@ -325,6 +340,18 @@ class TelegramBot:
         elif session.get("mode") == "wait_record_prediction":
             await self._process_record_prediction(update, text)
             return
+
+        if self._is_tobyworld_archive_request(text):
+            await self._handle_tobyworld_archive_request(update)
+            return
+
+        if self._is_chart_request(text):
+            self._mark_chart_message_handled(message_key)
+            try:
+                await self._handle_chart_request(update, context, text)
+            finally:
+                self._mark_chart_message_handled(message_key)
+            raise ApplicationHandlerStop
 
         # Default: AI Chat
         agent = self._get_agent(chat_id)
@@ -356,6 +383,8 @@ class TelegramBot:
             thread.join(timeout=5)
 
         if thread.is_alive():
+            if message_key in self._handled_chart_messages:
+                return
             await update.message.reply_text(
                 f"⚠️ AI Agent is still working after {AGENT_TIMEOUT} seconds. "
                 "Try a smaller request or raise TELEGRAM_AGENT_TIMEOUT_SECONDS."
@@ -363,10 +392,14 @@ class TelegramBot:
             return
 
         if error_holder[0]:
+            if message_key in self._handled_chart_messages:
+                return
             await update.message.reply_text(f"❌ AI Error: {error_holder[0]}")
             return
 
-        response = result_holder[0] or "(no response)"
+        if message_key in self._handled_chart_messages:
+            return
+        response = self._user_safe_agent_response(result_holder[0] or "(no response)")
         response = self._clean_response(response)
 
         # Split and send response
@@ -645,10 +678,157 @@ class TelegramBot:
             )
             return
         
-        response = result_holder[0] or "⚠️ AI Agent timed out or returned no response."
+        response = self._user_safe_agent_response(result_holder[0] or "⚠️ AI Agent timed out or returned no response.")
         response = self._clean_response(response)
         for i in range(0, len(response), 4090):
             await message.reply_text(response[i:i+4090], disable_web_page_preview=True)
+
+    async def _handle_image_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle Telegram photo/document image uploads through a narrow vision path."""
+        message = update.message
+        chat_id = update.effective_chat.id
+        prompt = (message.caption or "").strip() or "What is in this image? Give a concise, user-safe summary."
+
+        try:
+            image_bytes, mime_type = await self._download_telegram_image(message, context)
+        except ValueError as e:
+            await message.reply_text(str(e))
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.error("Telegram image download failed: %s", e, exc_info=True)
+            await message.reply_text("I could not download that image. Please try a smaller JPG or PNG.")
+            return
+
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+        try:
+            summary = await asyncio.wait_for(
+                asyncio.to_thread(self._analyze_image_bytes, image_bytes, mime_type, prompt),
+                timeout=AGENT_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            await message.reply_text("Image analysis timed out. Please try a smaller image or a more specific question.")
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.error("Image analysis failed: %s", e, exc_info=True)
+            await message.reply_text("I could not analyze that image with the current vision provider.")
+            return
+
+        response = self._clean_response(self._user_safe_agent_response(summary or "I could not find anything useful in that image."))
+        for i in range(0, len(response), 4090):
+            await message.reply_text(response[i:i+4090], disable_web_page_preview=True)
+
+    async def _handle_unsupported_media(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await update.message.reply_text("I can analyze image uploads only. Please send a JPG, PNG, or WebP image.")
+
+    async def _download_telegram_image(self, message: telegram.Message, context: ContextTypes.DEFAULT_TYPE) -> tuple[bytes, str]:
+        if message.photo:
+            photo = message.photo[-1]
+            if photo.file_size and photo.file_size > MAX_TELEGRAM_IMAGE_BYTES:
+                raise ValueError("That image is too large for this bot to analyze. Please send a smaller image.")
+            file = await context.bot.get_file(photo.file_id)
+            data = await file.download_as_bytearray()
+            return bytes(data), "image/jpeg"
+
+        document = message.document
+        if document and document.mime_type and document.mime_type.startswith("image/"):
+            if document.file_size and document.file_size > MAX_TELEGRAM_IMAGE_BYTES:
+                raise ValueError("That image is too large for this bot to analyze. Please send a smaller image.")
+            file = await context.bot.get_file(document.file_id)
+            data = await file.download_as_bytearray()
+            return bytes(data), document.mime_type
+
+        raise ValueError("I can analyze JPG, PNG, and WebP image uploads only.")
+
+    def _analyze_image_bytes(self, image_bytes: bytes, mime_type: str, prompt: str) -> str:
+        if self.provider != ModelProvider.GEMINI:
+            return "Image analysis is currently available with the Gemini provider only."
+        client = getattr(self, "_vision_client", None)
+        if client is None:
+            client = create_client(self.provider)
+            self._vision_client = client
+        if not hasattr(client, "analyze_image"):
+            return "Image analysis is currently available with the Gemini provider only."
+        return client.analyze_image(image_bytes, mime_type, prompt)
+
+    def _is_chart_request(self, text: str) -> bool:
+        return bool(CHART_REQUEST_RE.search(text) and self._extract_chart_symbol(text))
+
+    def _extract_chart_symbol(self, text: str) -> str | None:
+        symbol_match = SYMBOL_RE.search(text)
+        if symbol_match:
+            return symbol_match.group(1).upper()
+        lower_text = text.lower()
+        for name, symbol in SYMBOL_ALIASES.items():
+            if re.search(rf"\b{re.escape(name)}\b", lower_text):
+                return symbol
+        return None
+
+    def _is_tobyworld_archive_request(self, text: str) -> bool:
+        lower_text = text.lower()
+        return "tobyworld_master_archive.md" in lower_text or (
+            "tobyworld" in lower_text and "voice" in lower_text
+        )
+
+    async def _handle_tobyworld_archive_request(self, update: Update) -> None:
+        archive_path = Path(__file__).resolve().parents[1] / "workspace" / "tobyworld_master_archive.md"
+        try:
+            archive_text = archive_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            await update.message.reply_text("I could not read `workspace/tobyworld_master_archive.md` right now.")
+            return
+
+        excerpt = archive_text[:1200].strip()
+        if len(archive_text) > len(excerpt):
+            excerpt += "\n\n[archive loaded; excerpt trimmed]"
+
+        await update.message.reply_text(
+            "Read `workspace/tobyworld_master_archive.md`. Voice context restored.\n\n"
+            f"{excerpt}",
+            disable_web_page_preview=True,
+        )
+
+    def _message_key(self, update: Update) -> tuple[int, int]:
+        chat_id = update.effective_chat.id if update.effective_chat else 0
+        message_id = update.message.message_id if update.message else 0
+        return chat_id, message_id
+
+    def _mark_chart_message_handled(self, message_key: tuple[int, int]) -> None:
+        if message_key == (0, 0):
+            return
+        self._handled_chart_messages.add(message_key)
+        if len(self._handled_chart_messages) > 500:
+            self._handled_chart_messages = set(list(self._handled_chart_messages)[-250:])
+
+    async def _handle_chart_request(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
+        symbol = self._extract_chart_symbol(text)
+        if not symbol:
+            await update.message.reply_text("Tell me which symbol to chart, for example: BTC chart.")
+            return
+
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="upload_photo")
+        try:
+            from tools.vision_analysis import generate_price_chart_image
+
+            chart = await asyncio.wait_for(
+                asyncio.to_thread(generate_price_chart_image, symbol, 100),
+                timeout=60,
+            )
+        except asyncio.TimeoutError:
+            await update.message.reply_text(f"I could not generate the {symbol} chart before timing out.")
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.error("Chart request failed for %s: %s", symbol, e, exc_info=True)
+            await update.message.reply_text(f"I could not generate the {symbol} chart right now.")
+            return
+
+        if chart.error or not chart.image_bytes:
+            await update.message.reply_text(chart.error or f"I could not generate the {symbol} chart right now.")
+            return
+
+        photo = io.BytesIO(chart.image_bytes)
+        photo.name = f"{symbol.lower()}_chart.png"
+        await update.message.reply_photo(photo=photo, caption=f"{symbol} chart")
+        return
 
     async def _run_blocking(self, func, timeout: int = 45) -> str:
         try:
@@ -678,6 +858,24 @@ class TelegramBot:
         
         # 4. Remove excessive leading/trailing whitespace
         return text.strip()
+
+    def _user_safe_agent_response(self, text: str) -> str:
+        """Block raw tool dumps from reaching Telegram."""
+        if not isinstance(text, str):
+            text = str(text)
+
+        raw_tool_markers = (
+            "Tool result from ",
+            "[stdout]",
+            "[stderr]",
+            "[exit code:",
+            "Error executing tool '",
+        )
+        if any(marker in text for marker in raw_tool_markers):
+            logger.warning("Blocked raw tool output from Telegram response")
+            return "I could not complete that request safely. Please try a narrower request."
+
+        return text
 
     async def _show_result(self, query, title: str, result: str, back_callback: str) -> None:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=back_callback)]])
@@ -1071,6 +1269,8 @@ class TelegramBot:
             app = Application.builder().token(self.token).build()
             app.add_handler(CommandHandler("start", self._handle_start))
             app.add_handler(CallbackQueryHandler(self._handle_callback))
+            app.add_handler(MessageHandler((filters.PHOTO | filters.Document.IMAGE) & ~filters.COMMAND, self._handle_image_message))
+            app.add_handler(MessageHandler(filters.ATTACHMENT & ~filters.COMMAND, self._handle_unsupported_media))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
             logger.info("Bot starting...")
             app.run_polling(drop_pending_updates=True)

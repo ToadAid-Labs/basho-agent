@@ -3,6 +3,7 @@ import os
 import json
 import warnings
 import uuid
+from collections.abc import Iterable, Mapping
 from typing import Any, List, Optional
 from dotenv import load_dotenv
 
@@ -131,6 +132,37 @@ class GeminiClient:
         )
         return GeminiResponse(response)
 
+    def analyze_image(
+        self,
+        image_bytes: bytes,
+        mime_type: str,
+        prompt: str,
+        max_tokens: int = 1000,
+    ) -> str:
+        """Analyze one inline image with Gemini and return user-facing text."""
+        safe_prompt = prompt.strip() or "Describe this image briefly."
+
+        if self.uses_legacy_oauth_sdk:
+            response = self.client.generate_content(
+                [
+                    {"mime_type": mime_type, "data": image_bytes},
+                    safe_prompt,
+                ]
+            )
+            return getattr(response, "text", "") or _empty_response_message(response)
+
+        from google.genai import types
+
+        response = self.client.models.generate_content(
+            model=self.model_name,
+            contents=[
+                types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+                safe_prompt,
+            ],
+            config=types.GenerateContentConfig(max_output_tokens=max_tokens),
+        )
+        return getattr(response, "text", "") or _empty_response_message(response)
+
     def _clean_schema(self, schema: dict) -> dict:
         """Surgically clean up JSON schema for Gemini SDK (strips 'default', etc)."""
         if not isinstance(schema, dict):
@@ -164,6 +196,7 @@ class GeminiClient:
         """Build contents for the new google-genai SDK."""
         from google.genai import types
         contents = []
+        unsigned_tool_call_ids: set[str] = set()
         
         for msg in messages:
             role = msg.get("role")
@@ -185,6 +218,13 @@ class GeminiClient:
                         parts.append(types.Part(thought=block.get("text", "")))
                     elif block.get("type") == "tool_use":
                         # Gemini 3 requires thought_signature to match the one sent by model
+                        if not block.get("thought_signature"):
+                            call_id = str(block.get("id") or "")
+                            if call_id:
+                                unsigned_tool_call_ids.add(call_id)
+                            parts.append(types.Part(text=_format_unsigned_tool_call_text(block)))
+                            continue
+
                         sig = _decode_thought_signature(block.get("thought_signature"))
                         parts.append(types.Part(
                             thought_signature=sig,
@@ -195,6 +235,10 @@ class GeminiClient:
                             )
                         ))
                     elif block.get("type") == "tool_result":
+                        if str(block.get("tool_use_id") or "") in unsigned_tool_call_ids:
+                            parts.append(types.Part(text=_format_tool_result_context_text(block)))
+                            continue
+
                         # Tool results must follow the function call in the same role (user/model)
                         # but Gemini expects them as a separate turn with role 'user' usually
                         # or 'function' in some SDKs.
@@ -222,6 +266,7 @@ class GeminiClient:
         """Build contents for the legacy google-generativeai SDK using explicit Protos."""
         contents = []
         proto = self.proto
+        unsigned_tool_call_ids: set[str] = set()
         
         # System prompt as first user message in legacy
         if system_prompt:
@@ -251,6 +296,13 @@ class GeminiClient:
                             # Fallback to text for thought in legacy if thought field is missing
                             parts.append(proto.Part(text=f"[Thought]: {block.get('text', '')}"))
                     elif block.get("type") == "tool_use":
+                        if not block.get("thought_signature"):
+                            call_id = str(block.get("id") or "")
+                            if call_id:
+                                unsigned_tool_call_ids.add(call_id)
+                            parts.append(proto.Part(text=_format_unsigned_tool_call_text(block)))
+                            continue
+
                         sig = _decode_thought_signature(block.get("thought_signature"))
                         
                         # Use explicit proto objects to bypass SDK's dict guessing logic
@@ -268,6 +320,10 @@ class GeminiClient:
                             
                         parts.append(p)
                     elif block.get("type") == "tool_result":
+                        if str(block.get("tool_use_id") or "") in unsigned_tool_call_ids:
+                            parts.append(proto.Part(text=_format_tool_result_context_text(block)))
+                            continue
+
                         try:
                             res_val = json.loads(block["content"])
                             if not isinstance(res_val, dict):
@@ -340,6 +396,36 @@ def _decode_thought_signature(value: Any) -> Any:
             return value.encode("utf-8")
     return value
 
+
+def _json_safe_value(value: Any) -> Any:
+    """Convert SDK/protobuf containers into JSON-serializable Python values."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, bytes):
+        return base64.b64encode(value).decode("ascii")
+    if isinstance(value, Mapping):
+        return {str(k): _json_safe_value(v) for k, v in value.items()}
+    if hasattr(value, "items"):
+        return {str(k): _json_safe_value(v) for k, v in value.items()}
+    if isinstance(value, Iterable) and not isinstance(value, (str, bytes, bytearray)):
+        return [_json_safe_value(item) for item in value]
+    if hasattr(value, "model_dump"):
+        return _json_safe_value(value.model_dump())
+    if hasattr(value, "to_dict"):
+        return _json_safe_value(value.to_dict())
+    return str(value)
+
+
+def _format_unsigned_tool_call_text(block: dict[str, Any]) -> str:
+    name = block.get("name", "unknown")
+    return f"[Tool call recorded without Gemini thought signature: {name}]"
+
+
+def _format_tool_result_context_text(block: dict[str, Any]) -> str:
+    name = block.get("name", "unknown")
+    content = block.get("content", "")
+    return f"[Tool result from {name}]\n{content}"
+
 def _extract_blocks(response) -> list[Any]:
     blocks = []
     for candidate in getattr(response, "candidates", []) or []:
@@ -361,9 +447,8 @@ def _extract_blocks(response) -> list[Any]:
                 # Handle both legacy and new SDK formats
                 name = getattr(fn_call, "name", None)
                 args = getattr(fn_call, "args", {})
-                if hasattr(args, "items"): # Handle Proto Map
-                    args = dict(args.items())
-                elif not isinstance(args, dict):
+                args = _json_safe_value(args)
+                if not isinstance(args, dict):
                     args = {}
                 
                 # Capture the binary thought_signature from the Part when available.

@@ -14,7 +14,6 @@ from memory.store import load_last_session_for_provider, new_session, save_sessi
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are a sophisticated Crypto Trading AI Agent. You have access to tools that let you:
-- Run shell commands (bash)
 - Read and write files (read_file, write_file)
 - Search the web (web_search)
 - Fetch web pages (web_fetch)
@@ -54,6 +53,8 @@ Be concise, practical, and data-driven. Execute the steps needed, then explain t
 MAX_ITERATIONS = 50
 DEFAULT_MAX_PROVIDER_MESSAGES = 20
 DEFAULT_MAX_PROVIDER_CHARS = 60_000
+DEFAULT_TELEGRAM_MAX_TOOL_CALLS = 8
+TELEGRAM_BLOCKED_TOOLS = {"bash", "read_file", "write_file"}
 
 ROLES = {
     "researcher": {
@@ -154,6 +155,15 @@ class Agent:
         self.messages: list[dict[str, Any]] = _build_messages(history)
         self.client = create_client(self.provider)
         self.tool_definitions = get_tool_definitions()
+        self.max_tool_calls = (
+            _env_int("TELEGRAM_MAX_TOOL_CALLS", DEFAULT_TELEGRAM_MAX_TOOL_CALLS)
+            if self.user_id is not None
+            else _env_int("AGENT_MAX_TOOL_CALLS", 0)
+        )
+        if self.user_id is not None:
+            self.tool_definitions = [
+                t for t in self.tool_definitions if t["name"] not in TELEGRAM_BLOCKED_TOOLS
+            ]
 
         # Customize system prompt with user_id if available
         self.system_prompt = SYSTEM_PROMPT
@@ -212,6 +222,7 @@ class Agent:
         """Generator that yields chat tokens and tool activity events."""
         start_request = time.time()
         self.messages.append({"role": "user", "content": user_input})
+        tool_calls_executed = 0
 
         final_text = ""
         for iteration in range(MAX_ITERATIONS):
@@ -261,6 +272,11 @@ class Agent:
                     assistant_content.append({"type": "thought", "text": block.text})
                     # We don't yield thoughts to the main chat pane yet, but could to a log
                 elif block.type == "tool_use":
+                    if self.max_tool_calls and tool_calls_executed >= self.max_tool_calls:
+                        final_text = _tool_budget_message()
+                        yield {"type": "final_response", "content": final_text}
+                        return
+
                     tool_name = block.name
                     tool_input = block.input
                     tool_use_id = block.id
@@ -269,35 +285,39 @@ class Agent:
                     yield {"type": "tool_start", "name": tool_name, "input": tool_input}
 
                     self.console.print(f"[dim]Calling tool: {tool_name}[/dim]")
+                    tool_calls_executed += 1
                     tool_start = time.time()
                     result = execute_tool(tool_name, tool_input)
                     logger.info(f"Tool {tool_name} took {time.time() - tool_start:.3f}s")
                     
                     yield {"type": "tool_end", "name": tool_name, "result": result}
 
-                    if _should_return_gemini_tool_directly(self.provider, thought_signature):
-                        direct_tool_results.append({"name": tool_name, "content": result})
-                        assistant_content.append(
-                            {"type": "text", "text": _format_tool_result_text(tool_name, result)}
-                        )
-                    else:
-                        assistant_content.append(
-                            {
-                                "type": "tool_use",
-                                "id": tool_use_id,
-                                "name": tool_name,
-                                "input": tool_input,
-                                "thought_signature": thought_signature
-                            }
-                        )
-                        tool_results.append(
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": tool_use_id,
-                                "name": tool_name,
-                                "content": result,
-                            }
-                        )
+                    assistant_content.append(
+                        {
+                            "type": "tool_use",
+                            "id": tool_use_id,
+                            "name": tool_name,
+                            "input": tool_input,
+                            "thought_signature": thought_signature
+                        }
+                    )
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_use_id,
+                            "name": tool_name,
+                            "content": result,
+                        }
+                    )
+
+                    if _is_terminal_tool_failure(tool_name, result):
+                        final_text = _user_safe_tool_failure(tool_name)
+                        if assistant_content:
+                            self.messages.append({"role": "assistant", "content": assistant_content})
+                        self.messages.append({"role": "user", "content": tool_results})
+                        save_session_for_provider(self.sid, self.messages, self.provider.value)
+                        yield {"type": "final_response", "content": final_text}
+                        return
 
             if assistant_content:
                 self.messages.append({"role": "assistant", "content": assistant_content})
@@ -319,6 +339,7 @@ class Agent:
         """Send a message to the agent, handle tool calls, return the final text response."""
         start_request = time.time()
         self.messages.append({"role": "user", "content": user_input})
+        tool_calls_executed = 0
 
         final_text = ""
         for iteration in range(MAX_ITERATIONS):
@@ -349,39 +370,45 @@ class Agent:
                 elif block.type == "thought":
                     assistant_content.append({"type": "thought", "text": block.text})
                 elif block.type == "tool_use":
+                    if self.max_tool_calls and tool_calls_executed >= self.max_tool_calls:
+                        return _tool_budget_message()
+
                     tool_name = block.name
                     tool_input = block.input
                     tool_use_id = block.id
                     thought_signature = getattr(block, "thought_signature", None)
 
                     self.console.print(f"[dim]Calling tool: {tool_name}[/dim]")
+                    tool_calls_executed += 1
                     tool_start = time.time()
                     result = execute_tool(tool_name, tool_input)
                     logger.info(f"Tool {tool_name} took {time.time() - tool_start:.3f}s")
 
-                    if _should_return_gemini_tool_directly(self.provider, thought_signature):
-                        direct_tool_results.append({"name": tool_name, "content": result})
-                        assistant_content.append(
-                            {"type": "text", "text": _format_tool_result_text(tool_name, result)}
-                        )
-                    else:
-                        assistant_content.append(
-                            {
-                                "type": "tool_use",
-                                "id": tool_use_id,
-                                "name": tool_name,
-                                "input": tool_input,
-                                "thought_signature": thought_signature
-                            }
-                        )
-                        tool_results.append(
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": tool_use_id,
-                                "name": tool_name,
-                                "content": result,
-                            }
-                        )
+                    assistant_content.append(
+                        {
+                            "type": "tool_use",
+                            "id": tool_use_id,
+                            "name": tool_name,
+                            "input": tool_input,
+                            "thought_signature": thought_signature
+                        }
+                    )
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_use_id,
+                            "name": tool_name,
+                            "content": result,
+                        }
+                    )
+
+                    if _is_terminal_tool_failure(tool_name, result):
+                        final_text = _user_safe_tool_failure(tool_name)
+                        self.messages.append({"role": "assistant", "content": assistant_content})
+                        self.messages.append({"role": "user", "content": tool_results})
+                        save_session_for_provider(self.sid, self.messages, self.provider.value)
+                        logger.info(f"Total request duration: {time.time() - start_request:.3f}s")
+                        return final_text
 
             if assistant_content:
                 self.messages.append({"role": "assistant", "content": assistant_content})
@@ -413,7 +440,29 @@ def _build_messages(history: list[dict[dict, Any]]) -> list[dict[str, Any]]:
 
 
 def _should_return_gemini_tool_directly(provider: ModelProvider, thought_signature: Any) -> bool:
-    return provider == ModelProvider.GEMINI and not thought_signature
+    return False
+
+
+def _is_terminal_tool_failure(tool_name: str, result: str) -> bool:
+    if tool_name != "analyze_chart_vision":
+        return False
+    return isinstance(result, str) and result.strip().lower().startswith("error:")
+
+
+def _user_safe_tool_failure(tool_name: str) -> str:
+    if tool_name == "analyze_chart_vision":
+        return (
+            "I could not generate the chart image right now. "
+            "Chart support requires `mplfinance` and working market data."
+        )
+    return "I could not complete that tool request safely."
+
+
+def _tool_budget_message() -> str:
+    return (
+        "I stopped because this request tried to use too many tools at once. "
+        "Please ask a narrower question."
+    )
 
 
 def _format_tool_result_text(tool_name: str, result: str) -> str:

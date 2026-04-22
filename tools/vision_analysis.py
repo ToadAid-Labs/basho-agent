@@ -2,8 +2,13 @@ import io
 import os
 import base64
 import logging
-from typing import Optional
-import pandas as pd
+from dataclasses import dataclass
+from typing import Any, Optional
+
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
 
 from core.tools import register_tool
 
@@ -15,7 +20,15 @@ try:
 except ImportError:
     mpf = None
 
-def _generate_chart_image(df: pd.DataFrame, symbol: str) -> Optional[bytes]:
+
+@dataclass
+class ChartImageResult:
+    symbol: str
+    image_bytes: bytes | None = None
+    error: str | None = None
+
+
+def _generate_chart_image(df: Any, symbol: str) -> Optional[bytes]:
     """Generate a candlestick chart image from OHLCV data."""
     if mpf is None:
         logger.error("mplfinance is not installed. Cannot generate chart.")
@@ -36,6 +49,46 @@ def _generate_chart_image(df: pd.DataFrame, symbol: str) -> Optional[bytes]:
     except Exception as e:
         logger.error(f"Failed to generate chart image: {e}")
         return None
+
+
+def generate_price_chart_image(symbol: str, periods: int = 100) -> ChartImageResult:
+    """Fetch OHLCV data and render a PNG chart for a user-facing response."""
+    normalized_symbol = symbol.upper().strip()
+    if not normalized_symbol:
+        return ChartImageResult(symbol=symbol, error="Missing chart symbol.")
+
+    missing = []
+    if pd is None:
+        missing.append("pandas")
+    if mpf is None:
+        missing.append("mplfinance")
+    if missing:
+        return ChartImageResult(
+            symbol=normalized_symbol,
+            error=f"Chart rendering requires `{', '.join(missing)}`. Install it with `pip install {' '.join(missing)}`.",
+        )
+
+    try:
+        from backend.portfolio_dashboard import PortfolioTracker
+
+        tracker = PortfolioTracker()
+        df = tracker._fetch_real_ohlcv(normalized_symbol, periods)
+        if df.empty:
+            return ChartImageResult(symbol=normalized_symbol, error=f"No chart data was available for {normalized_symbol}.")
+
+        if pd is not None and not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index)
+
+        image_bytes = _generate_chart_image(df, normalized_symbol)
+        if not image_bytes:
+            return ChartImageResult(
+                symbol=normalized_symbol,
+                error="Chart rendering failed. Install or repair `mplfinance` and try again.",
+            )
+        return ChartImageResult(symbol=normalized_symbol, image_bytes=image_bytes)
+    except Exception as e:  # noqa: BLE001
+        logger.error("Failed to generate chart for %s: %s", normalized_symbol, e, exc_info=True)
+        return ChartImageResult(symbol=normalized_symbol, error=f"Could not generate a {normalized_symbol} chart right now.")
 
 def _analyze_with_anthropic(image_bytes: bytes, prompt: str) -> str:
     from anthropic import Anthropic
@@ -139,22 +192,10 @@ def _analyze_with_gemini(image_bytes: bytes, prompt: str) -> str:
 def analyze_chart_vision(symbol: str, periods: int = 100) -> str:
     """Generate a chart and analyze it using a Vision model."""
     try:
-        from backend.portfolio_dashboard import PortfolioTracker
-        tracker = PortfolioTracker()
-        
-        # Get OHLCV
-        df = tracker._fetch_real_ohlcv(symbol, periods)
-        if df.empty:
-            return f"Error: Could not fetch data for {symbol}."
-            
-        # Ensure index is datetime for mplfinance
-        if not isinstance(df.index, pd.DatetimeIndex):
-            df.index = pd.to_datetime(df.index)
-            
-        # Generate chart
-        image_bytes = _generate_chart_image(df, symbol)
-        if not image_bytes:
-            return "Error: Failed to generate chart image. Ensure mplfinance is installed."
+        chart = generate_price_chart_image(symbol, periods)
+        if chart.error or not chart.image_bytes:
+            return f"Error: {chart.error or 'Failed to generate chart image.'}"
+        image_bytes = chart.image_bytes
             
         prompt = (
             "Analyze this candlestick chart. Identify any key technical patterns "

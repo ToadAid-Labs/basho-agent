@@ -233,6 +233,35 @@ def get_supported_symbols() -> str:
         return f"[error] {type(e).__name__}: {e}"
 
 
+def calculate_bollinger_bands_from_data(symbol: str, candles: list[dict], period: int = 20, multiplier: float = 2.0) -> dict:
+    """Core logic to calculate Bollinger Bands from candle data."""
+    closes = [c["close"] for c in candles]
+    if len(closes) < period:
+        raise ValueError(f"Insufficient data: got {len(closes)} candles, need at least {period}")
+
+    # Calculate SMA
+    sma = sum(closes[-period:]) / period
+
+    # Calculate standard deviation
+    variance = sum((x - sma) ** 2 for x in closes[-period:]) / period
+    std_dev = variance ** 0.5
+
+    upper = sma + (multiplier * std_dev)
+    lower = sma - (multiplier * std_dev)
+    current_price = closes[-1]
+
+    return {
+        "symbol": symbol,
+        "period": period,
+        "multiplier": multiplier,
+        "sma": round(sma, 4),
+        "upper_band": round(upper, 4),
+        "lower_band": round(lower, 4),
+        "current_price": round(current_price, 4),
+        "status": "above" if current_price > upper else "below" if current_price < lower else "within",
+    }
+
+
 @register_tool(
     name="calculate_bollinger_bands",
     description="Calculate Bollinger Bands for a symbol using the specified period and standard deviation multiplier.",
@@ -254,30 +283,7 @@ def calculate_bollinger_bands(symbol: str, period: int = 20, multiplier: float =
             return candles_raw
 
         data = json.loads(candles_raw)
-        closes = [c["close"] for c in data]
-
-        # Calculate SMA
-        sma = sum(closes[-period:]) / period
-
-        # Calculate standard deviation
-        variance = sum((x - sma) ** 2 for x in closes[-period:]) / period
-        std_dev = variance ** 0.5
-
-        upper = sma + (multiplier * std_dev)
-        lower = sma - (multiplier * std_dev)
-        current_price = closes[-1]
-
-        bands = {
-            "symbol": symbol,
-            "period": period,
-            "multiplier": multiplier,
-            "sma": round(sma, 4),
-            "upper_band": round(upper, 4),
-            "lower_band": round(lower, 4),
-            "current_price": round(current_price, 4),
-            "status": "above" if current_price > upper else "below" if current_price < lower else "within",
-        }
-
+        bands = calculate_bollinger_bands_from_data(symbol, data, period, multiplier)
         return json.dumps(bands, indent=2)
     except Exception as e:
         return f"[error] Bollinger calculation failed: {e}"

@@ -1,10 +1,14 @@
 import importlib
 import pkgutil
 import sys
+import logging
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 # Global registry: tool_name -> (definition, handler)
 _TOOL_REGISTRY: dict[str, tuple[dict[str, Any], Callable]] = {}
+_TOOLS_LOADED = False
 
 
 def register_tool(
@@ -12,21 +16,7 @@ def register_tool(
     description: str,
     input_schema: dict[str, Any],
 ) -> Callable:
-    """Decorator to register a tool with the agent.
-
-    Usage:
-        @register_tool(
-            name="my_tool",
-            description="Does something useful",
-            input_schema={
-                "type": "object",
-                "properties": {"arg": {"type": "string"}},
-                "required": ["arg"],
-            },
-        )
-        def my_tool(arg: str) -> str:
-            return f"result: {arg}"
-    """
+    """Decorator to register a tool with the agent."""
 
     def decorator(func: Callable) -> Callable:
         _TOOL_REGISTRY[name] = (
@@ -42,17 +32,26 @@ def register_tool(
     return decorator
 
 
-def load_tools() -> None:
-    """Auto-load all tool modules from the tools package."""
+def load_tools(force_reload: bool = False) -> None:
+    """Auto-load all tool modules from the tools package once."""
+    global _TOOLS_LOADED
+    if _TOOLS_LOADED and not force_reload:
+        return
+
     _TOOL_REGISTRY.clear()
     for _, module_name, _ in pkgutil.iter_modules(["tools"]):
         if module_name in ("__init__",):
             continue
         full_name = f"tools.{module_name}"
-        if full_name in sys.modules:
-            importlib.reload(sys.modules[full_name])
-        else:
-            importlib.import_module(full_name)
+        try:
+            if full_name in sys.modules and force_reload:
+                importlib.reload(sys.modules[full_name])
+            else:
+                importlib.import_module(full_name)
+        except Exception as e:
+            logger.error(f"Failed to load tool module {full_name}: {e}")
+
+    _TOOLS_LOADED = True
 
 
 def get_tool_definitions() -> list[dict[str, Any]]:

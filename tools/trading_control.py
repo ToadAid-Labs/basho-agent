@@ -370,40 +370,42 @@ def check_risk_limits(user_id: int) -> str:
 def analyze_market_trend(symbol: str, period: int = 24) -> str:
     """Analyze market trend with technical indicators."""
     try:
-        from tools.trading_data import calculate_bollinger_bands, fetch_historical
+        from tools.trading_data import calculate_bollinger_bands_from_data, fetch_historical
 
-        # Get Bollinger Bands
-        bb_result = calculate_bollinger_bands(symbol)
-
-        if bb_result.startswith("[error]"):
-            return f"Error analyzing {symbol}: {bb_result}"
-
-        bb_data = json.loads(bb_result)
-
-        # Get recent historical data for trend
-        candles_result = fetch_historical(symbol, interval="1h", limit=period)
+        # Fetch historical data ONCE (use max required limit)
+        fetch_limit = max(period, 70) # Bollinger needs ~70 for period 20
+        candles_result = fetch_historical(symbol, interval="1h", limit=fetch_limit)
+        
         if candles_result.startswith("[error]"):
-            return f"Error fetching history: {candles_result}"
+            return f"Error analyzing {symbol}: {candles_result}"
 
         candles = json.loads(candles_result)
+        
+        # 1. Get Bollinger Bands using shared data
+        try:
+            bb_data = calculate_bollinger_bands_from_data(symbol, candles)
+        except Exception as e:
+            return f"Error calculating Bollinger Bands for {symbol}: {e}"
 
-        # Calculate trend
+        # 2. Calculate trend from same data
         if len(candles) >= 2:
-            first_close = candles[0]["close"]
-            last_close = candles[-1]["close"]
+            # Use requested period for trend calculation (slice from end)
+            trend_candles = candles[-period:]
+            first_close = trend_candles[0]["close"]
+            last_close = trend_candles[-1]["close"]
             change_pct = ((last_close - first_close) / first_close) * 100
 
             trend = "📈 UP" if change_pct > 5 else "📉 DOWN" if change_pct < -5 else "➡️ SIDEWAYS"
 
             # Get volume analysis
-            avg_volume = sum(c["volume"] for c in candles) / len(candles)
-            latest_volume = candles[-1]["volume"]
+            avg_volume = sum(c["volume"] for c in trend_candles) / len(trend_candles)
+            latest_volume = trend_candles[-1]["volume"]
             volume_signal = "High" if latest_volume > avg_volume * 1.5 else "Low" if latest_volume < avg_volume * 0.5 else "Normal"
 
             return (
                 f"📊 Market Analysis for {symbol.upper()}\n"
                 f"────────────────────────────────\n"
-                f"Trend: {trend} ({change_pct:+.2f}% over {period}h)\n"
+                f"Trend: {trend} ({change_pct:+.2f}% over {len(trend_candles)}h)\n"
                 f"Current Price: ${bb_data['current_price']:,.2f}\n"
                 f"Bollinger Status: {bb_data['status'].upper()}\n"
                 f"Upper Band: ${bb_data['upper_band']:,.2f}\n"

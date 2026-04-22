@@ -4,7 +4,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from core.gemini_client import GeminiClient, GeminiResponse, _function_call_id
+from core.agent import _should_return_gemini_tool_directly
+from core.gemini_client import GeminiClient, GeminiResponse, _function_call_id, _json_safe_value
+from core.provider import ModelProvider
 
 
 class EmptyContent:
@@ -47,6 +49,41 @@ class FunctionCallGeminiResponse:
         self.prompt_feedback = None
 
 
+class RepeatedCompositeStub:
+    def __iter__(self):
+        return iter([{"symbol": "BTC"}, {"symbol": "ETH"}])
+
+
+class LegacyProtoStub:
+    class FunctionCall:
+        def __init__(self, name, args):
+            self.name = name
+            self.args = args
+
+        def __contains__(self, key):
+            return hasattr(self, key)
+
+    class FunctionResponse:
+        def __init__(self, name, response):
+            self.name = name
+            self.response = response
+
+    class Part:
+        def __init__(self, **kwargs):
+            self.thought_signature = None
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+        def __getitem__(self, key):
+            return getattr(self, key)
+
+
+def legacy_test_client():
+    client = GeminiClient.__new__(GeminiClient)
+    client.proto = LegacyProtoStub
+    return client
+
+
 def test_gemini_response_handles_empty_candidate_parts():
     response = GeminiResponse(EmptyGeminiResponse())
 
@@ -70,6 +107,25 @@ def test_gemini_response_does_not_treat_function_call_id_as_signature():
     assert response.content[0].type == "tool_use"
     assert response.content[0].id == "m5ag5amp"
     assert response.content[0].thought_signature is None
+
+
+def test_gemini_response_tool_args_are_json_safe():
+    response = GeminiResponse(
+        FunctionCallGeminiResponse(
+            FunctionCallPart(args={"symbols": RepeatedCompositeStub(), "chain": "base"})
+        )
+    )
+
+    assert response.content[0].input == {
+        "symbols": [{"symbol": "BTC"}, {"symbol": "ETH"}],
+        "chain": "base",
+    }
+
+
+def test_json_safe_value_handles_repeated_composite_like_values():
+    assert _json_safe_value({"items": RepeatedCompositeStub()}) == {
+        "items": [{"symbol": "BTC"}, {"symbol": "ETH"}]
+    }
 
 
 def test_gemini_content_builder_restores_thought_signature_bytes():
@@ -96,8 +152,44 @@ def test_gemini_content_builder_restores_thought_signature_bytes():
     assert part.function_call.name == "web_search"
 
 
-def test_legacy_content_builder_puts_thought_signature_on_part():
+def test_gemini_content_builder_collapses_unsigned_tool_calls_to_text():
     client = GeminiClient.__new__(GeminiClient)
+    messages = [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "web_search",
+                    "input": {"query": "BTC"},
+                    "thought_signature": None,
+                    "id": "call-1",
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call-1",
+                    "name": "web_search",
+                    "content": "No results found.",
+                }
+            ],
+        },
+    ]
+
+    contents = client._build_contents_new(messages)
+
+    assert contents[0].parts[0].function_call is None
+    assert "Tool call recorded without Gemini thought signature" in contents[0].parts[0].text
+    assert contents[1].parts[0].function_response is None
+    assert "Tool result from web_search" in contents[1].parts[0].text
+
+
+def test_legacy_content_builder_puts_thought_signature_on_part():
+    client = legacy_test_client()
     messages = [
         {
             "role": "assistant",
@@ -119,8 +211,46 @@ def test_legacy_content_builder_puts_thought_signature_on_part():
     assert "thought_signature" not in contents[0]["parts"][0]["function_call"]
 
 
+def test_legacy_content_builder_collapses_unsigned_tool_calls_to_text():
+    client = legacy_test_client()
+    messages = [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "web_search",
+                    "input": {"query": "BTC"},
+                    "thought_signature": None,
+                    "id": "call-1",
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call-1",
+                    "name": "web_search",
+                    "content": "No results found.",
+                }
+            ],
+        },
+    ]
+
+    contents = client._build_contents_legacy(messages, system_prompt=None)
+
+    assert "Tool call recorded without Gemini thought signature" in contents[0]["parts"][0]["text"]
+    assert "Tool result from web_search" in contents[1]["parts"][0]["text"]
+
+
 def test_function_call_id_does_not_use_raw_binary_signature():
     raw_signature = b"\xbe\x00sig"
 
     assert _function_call_id({"id": "call-1"}, raw_signature) == "call-1"
     assert _function_call_id({}, raw_signature) == base64.b64encode(raw_signature).decode("ascii")
+
+
+def test_gemini_tool_results_are_not_returned_directly():
+    assert _should_return_gemini_tool_directly(ModelProvider.GEMINI, None) is False

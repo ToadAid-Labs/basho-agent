@@ -2,8 +2,9 @@ import unittest
 from unittest.mock import MagicMock, patch, AsyncMock
 import os
 import json
+from types import SimpleNamespace
 from telegram import Update, User, Chat, Message
-from telegram.ext import ContextTypes
+from telegram.ext import ContextTypes, ApplicationHandlerStop
 
 # Mock the environment variable before importing TelegramBot
 os.environ["TELEGRAM_BOT_TOKEN"] = "123456789:ABCDEFGH"
@@ -30,6 +31,95 @@ class TestTelegramBot(unittest.IsolatedAsyncioTestCase):
                 buttons.append(button.text)
         self.assertIn("📊 Dashboard", buttons)
         self.assertIn("👛 Wallet", buttons)
+
+    def test_chart_request_detection(self):
+        self.assertTrue(self.bot._is_chart_request("pull a BTC chart and show me brother"))
+        self.assertEqual(self.bot._extract_chart_symbol("show bitcoin chart"), "BTC")
+        self.assertFalse(self.bot._is_chart_request("what is BTC doing?"))
+
+    def test_user_safe_agent_response_blocks_raw_tool_output(self):
+        response = self.bot._user_safe_agent_response("Tool result from bash:\n[stdout]\nsecret")
+
+        self.assertIn("could not complete", response)
+        self.assertNotIn("[stdout]", response)
+
+    async def test_tobyworld_archive_request_bypasses_agent(self):
+        update = MagicMock(spec=Update)
+        update.effective_chat.id = self.chat_id
+        update.message = AsyncMock(spec=Message)
+        update.message.message_id = 7
+        update.message.text = "brother, read your tobyworld_master_archive.md to get your voice back"
+        context = MagicMock(spec=ContextTypes.DEFAULT_TYPE)
+        self.bot._get_agent = MagicMock(side_effect=AssertionError("generic agent path should not run"))
+
+        await self.bot._handle_message(update, context)
+
+        self.bot._get_agent.assert_not_called()
+        update.message.reply_text.assert_awaited_once()
+        self.assertIn("Voice context restored", update.message.reply_text.call_args.args[0])
+
+    @patch("tools.vision_analysis.generate_price_chart_image")
+    async def test_handle_chart_request_sends_photo(self, mock_chart):
+        mock_chart.return_value = SimpleNamespace(symbol="BTC", image_bytes=b"png-bytes", error=None)
+        update = MagicMock(spec=Update)
+        update.effective_chat.id = self.chat_id
+        update.message = AsyncMock(spec=Message)
+        context = MagicMock(spec=ContextTypes.DEFAULT_TYPE)
+        context.bot.send_chat_action = AsyncMock()
+
+        await self.bot._handle_chart_request(update, context, "pull a BTC chart and show me")
+
+        update.message.reply_photo.assert_awaited_once()
+        update.message.reply_text.assert_not_called()
+
+    async def test_handle_message_chart_request_stops_after_fast_path(self):
+        update = MagicMock(spec=Update)
+        update.effective_chat.id = self.chat_id
+        update.message = AsyncMock(spec=Message)
+        update.message.message_id = 42
+        update.message.text = "pull a BTC chart and show me"
+        context = MagicMock(spec=ContextTypes.DEFAULT_TYPE)
+        context.bot.send_chat_action = AsyncMock()
+
+        self.bot._handle_chart_request = AsyncMock()
+        self.bot._get_agent = MagicMock(side_effect=AssertionError("generic agent path should not run"))
+
+        with self.assertRaises(ApplicationHandlerStop):
+            await self.bot._handle_message(update, context)
+
+        self.bot._handle_chart_request.assert_awaited_once_with(update, context, update.message.text)
+        self.bot._get_agent.assert_not_called()
+        update.message.reply_text.assert_not_called()
+
+    async def test_duplicate_chart_message_is_ignored(self):
+        update = MagicMock(spec=Update)
+        update.effective_chat.id = self.chat_id
+        update.message = AsyncMock(spec=Message)
+        update.message.message_id = 99
+        update.message.text = "pull a BTC chart and show me"
+        context = MagicMock(spec=ContextTypes.DEFAULT_TYPE)
+        self.bot._mark_chart_message_handled((self.chat_id, 99))
+        self.bot._handle_chart_request = AsyncMock()
+
+        with self.assertRaises(ApplicationHandlerStop):
+            await self.bot._handle_message(update, context)
+
+        self.bot._handle_chart_request.assert_not_called()
+        update.message.reply_text.assert_not_called()
+
+    @patch("tools.vision_analysis.generate_price_chart_image")
+    async def test_handle_chart_request_failure_fails_closed(self, mock_chart):
+        mock_chart.return_value = SimpleNamespace(symbol="BTC", image_bytes=None, error="Chart rendering requires `mplfinance`.")
+        update = MagicMock(spec=Update)
+        update.effective_chat.id = self.chat_id
+        update.message = AsyncMock(spec=Message)
+        context = MagicMock(spec=ContextTypes.DEFAULT_TYPE)
+        context.bot.send_chat_action = AsyncMock()
+
+        await self.bot._handle_chart_request(update, context, "pull a BTC chart and show me")
+
+        update.message.reply_text.assert_awaited_once_with("Chart rendering requires `mplfinance`.")
+        update.message.reply_photo.assert_not_called()
 
     @patch("requests.get")
     async def test_call_api_get_success(self, mock_get):
