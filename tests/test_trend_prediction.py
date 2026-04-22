@@ -286,6 +286,28 @@ def test_forge_watchlist_tools(monkeypatch, tmp_path):
     assert "Deleted forge watch" in delete_msg
 
 
+def test_forge_summary_accepts_float_limit(monkeypatch, tmp_path):
+    from tools import trend_prediction_tools
+
+    monkeypatch.setenv("TREND_PREDICTION_LEDGER_PATH", str(tmp_path / "ledger.json"))
+
+    summary = json.loads(trend_prediction_tools.forge_prediction_ledger_summary(limit=10.0))
+
+    assert summary["total_predictions"] == 0
+
+
+def test_forge_list_watches_falls_back_to_global_watches(monkeypatch, tmp_path):
+    from tools import trend_prediction_tools
+
+    monkeypatch.setenv("TREND_FORGE_WATCHLIST_PATH", str(tmp_path / "watchlist.json"))
+    trend_prediction_tools.forge_add_watch(asset="toby", horizons=["4h"], modes=["composite"])
+
+    watches = json.loads(trend_prediction_tools.forge_list_watches(active_only=True, user_id=6095539526.0))
+
+    assert len(watches) == 1
+    assert watches[0]["asset"] == "TOBY"
+
+
 def test_forge_alert_tools(monkeypatch, tmp_path):
     from backend.trend_alerts import TrendForgeAlertStore
     from tools import trend_prediction_tools

@@ -3,4 +3,5 @@ agent_memory/*
 scratch/*
 
 !agent_memory/README.md
+!agent_memory/mission_briefing_strategy.md
 !scratch/README.md

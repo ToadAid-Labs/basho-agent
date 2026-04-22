@@ -32,6 +32,13 @@ def test_strategy_tools_use_sanitized_memory_path(tmp_path, monkeypatch):
     assert "strategy body" in strategy_tools.read_strategy("../eth??")
 
 
+def test_mission_briefing_strategy_is_anchored():
+    briefing = strategy_tools.read_strategy("mission_briefing_strategy")
+
+    assert "workspace/tobyworld_master_archive.md" in briefing
+    assert "Tobyworld Trinity assets are TOBY, PATIENCE, and TABOSHI" in briefing
+
+
 def test_fifo_close_updates_correct_trade_lots():
     account = PaperTradingAccount(user_id=7, initial_balance=1_000.0)
     assert account.open_position("ETH", 1.0, 100.0, strategy="first")

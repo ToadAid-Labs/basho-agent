@@ -14,7 +14,9 @@ def _safe_symbol(symbol: str) -> str:
 
 
 def _strategy_path(symbol: str) -> Path:
-    return MEMORY_DIR / f"{_safe_symbol(symbol).lower()}_strategy.md"
+    safe_symbol = _safe_symbol(symbol).lower()
+    suffix = "" if safe_symbol.endswith("_strategy") else "_strategy"
+    return MEMORY_DIR / f"{safe_symbol}{suffix}.md"
 
 @register_tool(
     name="read_strategy",

@@ -21,6 +21,13 @@ def _dict(value: dict[str, Any] | None) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _int_arg(value: Any, default: Any) -> Any:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @register_tool(
     name="forge_token_prediction",
     description=(
@@ -430,6 +437,7 @@ def forge_evaluate_due_predictions(asset: str | None = None, evaluate_all: bool 
 )
 def forge_prediction_ledger_summary(asset: str | None = None, limit: int = 100) -> str:
     """Return trend prediction ledger summary metrics."""
+    limit = max(1, _int_arg(limit, 100))
     summary = TrendPredictionLedger().summary(asset=asset, limit=limit)
     return json.dumps(summary, indent=2)
 
@@ -547,6 +555,8 @@ def forge_add_watch(
     user_id: int | None = None,
 ) -> str:
     try:
+        interval_minutes = max(1, _int_arg(interval_minutes, 60))
+        user_id = _int_arg(user_id, None) if user_id is not None else None
         watch = TrendForgeWatchlist().add(
             asset=asset,
             token_address=token_address,
@@ -574,7 +584,10 @@ def forge_add_watch(
     },
 )
 def forge_list_watches(active_only: bool = False, user_id: int | None = None) -> str:
+    user_id = _int_arg(user_id, None) if user_id is not None else None
     watches = TrendForgeWatchlist().list(active_only=active_only, user_id=user_id)
+    if user_id is not None and not watches:
+        watches = TrendForgeWatchlist().list(active_only=active_only, user_id=None)
     return json.dumps(watches, indent=2)
 
 
