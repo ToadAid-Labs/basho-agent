@@ -49,6 +49,15 @@ def _get_session_dir() -> Path:
 
 def _load_user_session(chat_id: int) -> tuple[str | None, list[dict[str, Any]]]:
     """Load session for a specific Telegram user."""
+    try:
+        from memory.store import load_last_session_for_thread
+
+        sid, messages = load_last_session_for_thread(f"telegram:{chat_id}")
+        if sid:
+            return sid, messages
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Failed to load SQLite Telegram session for %s: %s", chat_id, e)
+
     session_file = _get_session_dir() / f"user_{chat_id}.json"
     if not session_file.exists():
         return None, []
@@ -465,6 +474,8 @@ class TelegramBot:
         elif category == "action":
             if action == "reset_ai":
                 if chat_id in self._agents: del self._agents[chat_id]
+                from memory.store import reset_sessions_for_thread
+                reset_sessions_for_thread(f"telegram:{chat_id}")
                 _get_session_dir().joinpath(f"user_{chat_id}.json").unlink(missing_ok=True)
                 await query.edit_message_text("🔄 AI session reset!", reply_markup=self._get_main_menu())
             elif action == "wallet_status":

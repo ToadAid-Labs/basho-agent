@@ -9,7 +9,7 @@ from rich.console import Console
 
 from core.provider import ModelProvider, create_client, get_provider
 from core.tools import execute_tool, get_tool_definitions
-from memory.store import load_last_session_for_provider, new_session, save_session_for_provider
+from memory.store import latest_summary, load_last_session_for_provider, new_session, save_session_for_provider
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ When executing trades, always consider risk management.
 Be concise, practical, and data-driven. Execute the steps needed, then explain the result clearly."""
 
 MAX_ITERATIONS = 50
-DEFAULT_MAX_PROVIDER_MESSAGES = 20
+DEFAULT_MAX_PROVIDER_MESSAGES = 10
 DEFAULT_MAX_PROVIDER_CHARS = 60_000
 DEFAULT_TELEGRAM_MAX_TOOL_CALLS = 8
 TELEGRAM_BLOCKED_TOOLS = {"bash", "read_file", "write_file"}
@@ -127,6 +127,7 @@ class Agent:
         self.provider = provider or get_provider()
         self.console = console or Console()
         self.user_id = user_id
+        self.thread_id = f"telegram:{user_id}" if user_id is not None else self.provider.value
 
         # Load or create session
         if history is not None:
@@ -153,6 +154,7 @@ class Agent:
 
         self.sid = sid or new_session()
         self.messages: list[dict[str, Any]] = _build_messages(history)
+        self.latest_summary = latest_summary(self.sid)
         self.client = create_client(self.provider)
         self.tool_definitions = get_tool_definitions()
         self.max_tool_calls = (
@@ -230,7 +232,7 @@ class Agent:
             try:
                 # Only Ollama currently supports create_message_stream in this simplified implementation
                 if hasattr(self.client, "create_message_stream") and self.provider == ModelProvider.OLLAMA:
-                    provider_messages = _build_provider_messages(self.messages)
+                    provider_messages = _build_provider_messages(self.messages, self.latest_summary)
                     _log_provider_context(self.messages, provider_messages)
                     stream = self.client.create_message_stream(
                         messages=provider_messages,
@@ -240,7 +242,7 @@ class Agent:
                 else:
                     # Fallback for providers without streaming (returns single response)
                     llm_start = time.time()
-                    provider_messages = _build_provider_messages(self.messages)
+                    provider_messages = _build_provider_messages(self.messages, self.latest_summary)
                     _log_provider_context(self.messages, provider_messages)
                     response = self.client.create_message(
                         messages=provider_messages,
@@ -315,7 +317,7 @@ class Agent:
                         if assistant_content:
                             self.messages.append({"role": "assistant", "content": assistant_content})
                         self.messages.append({"role": "user", "content": tool_results})
-                        save_session_for_provider(self.sid, self.messages, self.provider.value)
+                        self._save_messages()
                         yield {"type": "final_response", "content": final_text}
                         return
 
@@ -326,7 +328,7 @@ class Agent:
 
             if not tool_results:
                 final_text = _format_direct_tool_response(response_text, direct_tool_results)
-                save_session_for_provider(self.sid, self.messages, self.provider.value)
+                self._save_messages()
                 logger.info(f"Total request duration: {time.time() - start_request:.3f}s")
                 yield {"type": "final_response", "content": final_text}
                 return
@@ -346,7 +348,7 @@ class Agent:
             iter_start = time.time()
             try:
                 llm_start = time.time()
-                provider_messages = _build_provider_messages(self.messages)
+                provider_messages = _build_provider_messages(self.messages, self.latest_summary)
                 _log_provider_context(self.messages, provider_messages)
                 response = self.client.create_message(
                     messages=provider_messages,
@@ -406,7 +408,7 @@ class Agent:
                         final_text = _user_safe_tool_failure(tool_name)
                         self.messages.append({"role": "assistant", "content": assistant_content})
                         self.messages.append({"role": "user", "content": tool_results})
-                        save_session_for_provider(self.sid, self.messages, self.provider.value)
+                        self._save_messages()
                         logger.info(f"Total request duration: {time.time() - start_request:.3f}s")
                         return final_text
 
@@ -417,13 +419,23 @@ class Agent:
 
             if not tool_results:
                 final_text = _format_direct_tool_response(response_text, direct_tool_results)
-                save_session_for_provider(self.sid, self.messages, self.provider.value)
+                self._save_messages()
                 logger.info(f"Total request duration: {time.time() - start_request:.3f}s")
                 return final_text
 
             self.messages.append({"role": "user", "content": tool_results})
 
         return "Error: tool loop exceeded maximum iterations."
+
+    def _save_messages(self) -> None:
+        save_session_for_provider(
+            self.sid,
+            self.messages,
+            self.provider.value,
+            user_id=self.user_id,
+            thread_id=self.thread_id,
+        )
+        self.latest_summary = latest_summary(self.sid)
 
 
 def _build_messages(history: list[dict[dict, Any]]) -> list[dict[str, Any]]:
@@ -481,7 +493,10 @@ def _format_direct_tool_response(
     return "\n\n".join(parts).strip()
 
 
-def _build_provider_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _build_provider_messages(
+    messages: list[dict[str, Any]],
+    latest_summary: str | None = None,
+) -> list[dict[str, Any]]:
     """Bound provider context without deleting persisted session history."""
     max_messages = _env_int("AGENT_MAX_PROVIDER_MESSAGES", DEFAULT_MAX_PROVIDER_MESSAGES)
     max_chars = _env_int("AGENT_MAX_PROVIDER_CHARS", DEFAULT_MAX_PROVIDER_CHARS)
@@ -503,7 +518,27 @@ def _build_provider_messages(messages: list[dict[str, Any]]) -> list[dict[str, A
     provider_messages = list(reversed(selected))
     while provider_messages and _contains_only_tool_results(provider_messages[0]):
         provider_messages.pop(0)
-    return provider_messages or messages[-1:]
+    provider_messages = provider_messages or messages[-1:]
+
+    if latest_summary:
+        summary_message = _summary_context_message(latest_summary)
+        if max_chars <= 0 or _message_chars(summary_message) + sum(
+            _message_chars(msg) for msg in provider_messages
+        ) <= max_chars:
+            provider_messages = [summary_message] + provider_messages
+
+    return provider_messages
+
+
+def _summary_context_message(summary: str) -> dict[str, str]:
+    return {
+        "role": "user",
+        "content": (
+            "Conversation continuity summary from earlier persisted turns. "
+            "Use this as context, but prioritize the latest raw messages when they differ.\n\n"
+            f"{summary}"
+        ),
+    }
 
 
 def _log_provider_context(

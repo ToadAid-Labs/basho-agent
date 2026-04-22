@@ -39,6 +39,22 @@ def test_build_provider_messages_drops_leading_orphan_tool_results(monkeypatch):
     assert _build_provider_messages(messages) == [messages[-1]]
 
 
+def test_build_provider_messages_prepends_summary_inside_char_budget(monkeypatch):
+    monkeypatch.setenv("AGENT_MAX_PROVIDER_MESSAGES", "2")
+    monkeypatch.setenv("AGENT_MAX_PROVIDER_CHARS", "100000")
+    messages = [
+        {"role": "user", "content": "old"},
+        {"role": "assistant", "content": "middle"},
+        {"role": "user", "content": "latest"},
+    ]
+
+    provider_messages = _build_provider_messages(messages, latest_summary="User is tracking ETH.")
+
+    assert provider_messages[0]["role"] == "user"
+    assert "User is tracking ETH." in provider_messages[0]["content"]
+    assert provider_messages[1:] == messages[-2:]
+
+
 def test_unsigned_gemini_tool_calls_return_directly():
     assert _should_return_gemini_tool_directly(ModelProvider.GEMINI, None)
     assert not _should_return_gemini_tool_directly(ModelProvider.GEMINI, "signature")
