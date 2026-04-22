@@ -1,6 +1,7 @@
 import base64
 import os
 import json
+import logging
 import warnings
 import uuid
 from collections.abc import Iterable, Mapping
@@ -8,6 +9,8 @@ from typing import Any, List, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 warnings.filterwarnings(
     "ignore",
@@ -36,10 +39,9 @@ class GeminiClient:
     """Wrapper around the Google Gemini API."""
 
     def __init__(self, model: str | None = None):
-        from google.oauth2.credentials import Credentials
-        
-        token_path = os.path.expanduser(os.getenv("GOOGLE_TOKEN_PATH", "~/.agent_google_token.json"))
-        api_key = os.getenv("GEMINI_API_KEY")
+        self.token_path = os.path.expanduser(os.getenv("GOOGLE_TOKEN_PATH", "~/.agent_google_token.json"))
+        self.api_key = os.getenv("GEMINI_API_KEY")
+        self._token_mtime: float | None = None
         raw_model = model or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         # Ensure model name doesn't have double prefix if using legacy SDK
         if raw_model.startswith("models/"):
@@ -49,25 +51,52 @@ class GeminiClient:
         
         self.uses_legacy_oauth_sdk = False
         
-        if os.path.exists(token_path) and not api_key:
-            # Use OAuth Token
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", FutureWarning)
-                import google.generativeai as legacy_genai
-                from google.ai import generativelanguage as proto
-
-            creds = Credentials.from_authorized_user_file(token_path)
-            validate_gemini_oauth_scopes(creds)
-            legacy_genai.configure(credentials=creds)
-            self.client = legacy_genai.GenerativeModel(model_name=self.model_name)
-            self.proto = proto
-            self.uses_legacy_oauth_sdk = True
-        elif api_key:
+        if os.path.exists(self.token_path) and not self.api_key:
+            self._configure_legacy_oauth_client()
+        elif self.api_key:
             # Use simple API Key
             from google import genai
-            self.client = genai.Client(api_key=api_key)
+            self.client = genai.Client(api_key=self.api_key)
         else:
             raise ValueError("No Gemini authentication found. Run 'python3 agent.py login'.")
+
+    def _configure_legacy_oauth_client(self) -> None:
+        """Load OAuth credentials from disk and rebuild the legacy SDK client."""
+        from google.oauth2.credentials import Credentials
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            import google.generativeai as legacy_genai
+            from google.ai import generativelanguage as proto
+
+        creds = Credentials.from_authorized_user_file(self.token_path)
+        validate_gemini_oauth_scopes(creds)
+        legacy_genai.configure(credentials=creds)
+        self.client = legacy_genai.GenerativeModel(model_name=self.model_name)
+        self.proto = proto
+        self.uses_legacy_oauth_sdk = True
+        self._token_mtime = self._current_token_mtime()
+
+    def _current_token_mtime(self) -> float | None:
+        try:
+            return os.path.getmtime(self.token_path)
+        except OSError:
+            return None
+
+    def _reload_legacy_oauth_if_token_changed(self, force: bool = False) -> bool:
+        """Reload OAuth credentials after web login refreshes the token file."""
+        if not self.uses_legacy_oauth_sdk or self.api_key:
+            return False
+
+        current_mtime = self._current_token_mtime()
+        if current_mtime is None:
+            return False
+        if not force and self._token_mtime == current_mtime:
+            return False
+
+        logger.info("Reloading Gemini OAuth credentials from updated token file.")
+        self._configure_legacy_oauth_client()
+        return True
 
     def create_message(
         self,
@@ -85,6 +114,7 @@ class GeminiClient:
             cleaned_tools.append(cleaned_t)
 
         if self.uses_legacy_oauth_sdk:
+            self._reload_legacy_oauth_if_token_changed()
             # Legacy SDK Tool mapping
             legacy_tools = []
             if cleaned_tools:
@@ -143,6 +173,7 @@ class GeminiClient:
         safe_prompt = prompt.strip() or "Describe this image briefly."
 
         if self.uses_legacy_oauth_sdk:
+            self._reload_legacy_oauth_if_token_changed()
             response = self.client.generate_content(
                 [
                     {"mime_type": mime_type, "data": image_bytes},

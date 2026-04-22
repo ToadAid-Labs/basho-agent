@@ -254,3 +254,39 @@ def test_function_call_id_does_not_use_raw_binary_signature():
 
 def test_gemini_tool_results_are_not_returned_directly():
     assert _should_return_gemini_tool_directly(ModelProvider.GEMINI, None) is False
+
+
+def test_gemini_client_reloads_oauth_when_token_file_changes(monkeypatch):
+    client = GeminiClient.__new__(GeminiClient)
+    client.uses_legacy_oauth_sdk = True
+    client.api_key = None
+    client.token_path = "/tmp/fake-google-token.json"
+    client._token_mtime = 1.0
+    reloads = []
+
+    monkeypatch.setattr("core.gemini_client.os.path.getmtime", lambda path: 2.0)
+    monkeypatch.setattr(
+        client,
+        "_configure_legacy_oauth_client",
+        lambda: reloads.append(client.token_path),
+    )
+
+    assert client._reload_legacy_oauth_if_token_changed() is True
+    assert reloads == ["/tmp/fake-google-token.json"]
+
+
+def test_gemini_client_keeps_oauth_client_when_token_file_unchanged(monkeypatch):
+    client = GeminiClient.__new__(GeminiClient)
+    client.uses_legacy_oauth_sdk = True
+    client.api_key = None
+    client.token_path = "/tmp/fake-google-token.json"
+    client._token_mtime = 2.0
+
+    monkeypatch.setattr("core.gemini_client.os.path.getmtime", lambda path: 2.0)
+    monkeypatch.setattr(
+        client,
+        "_configure_legacy_oauth_client",
+        lambda: (_ for _ in ()).throw(AssertionError("should not reload")),
+    )
+
+    assert client._reload_legacy_oauth_if_token_changed() is False
