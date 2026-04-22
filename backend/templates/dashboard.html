@@ -353,6 +353,94 @@
             margin-top: 5px;
         }
 
+        .forge-panel {
+            margin-top: 30px;
+        }
+
+        .forge-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            margin: 15px 0 20px;
+        }
+
+        .forge-stat {
+            background: rgba(0, 0, 0, 0.18);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 8px;
+            padding: 14px;
+            min-height: 82px;
+        }
+
+        .forge-actions {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .forge-actions input,
+        .forge-actions select {
+            min-width: 0;
+            padding: 10px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            background: rgba(0, 0, 0, 0.25);
+            color: white;
+            outline: none;
+        }
+
+        .forge-actions button {
+            min-height: 38px;
+        }
+
+        .forge-table-wrap {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .mini-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.88em;
+        }
+
+        .mini-table th,
+        .mini-table td {
+            text-align: left;
+            padding: 10px 8px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+            vertical-align: top;
+        }
+
+        .mini-table th {
+            color: #888;
+            font-weight: 500;
+        }
+
+        .forge-output {
+            margin-top: 15px;
+            padding: 12px;
+            border-radius: 8px;
+            background: rgba(0, 0, 0, 0.22);
+            color: #aaa;
+            max-height: 220px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            font-size: 0.86em;
+        }
+
+        @media (max-width: 900px) {
+            .grid,
+            .forge-grid,
+            .forge-actions,
+            .forge-table-wrap,
+            .charts-container {
+                grid-template-columns: 1fr;
+            }
+        }
+
     </style>
 </head>
 <body>
@@ -422,6 +510,80 @@
             <div id="wisdom-feed-content" style="max-height: 300px; overflow-y: auto;">
                 Loading wisdom ledger...
             </div>
+        </div>
+
+        <div class="card forge-panel">
+            <div class="chart-title">🔮 Trend Prediction Forge</div>
+            <div class="forge-grid">
+                <div class="forge-stat">
+                    <span class="stat-label">Ledger Accuracy</span>
+                    <div class="stat-value" id="forge-accuracy">n/a</div>
+                </div>
+                <div class="forge-stat">
+                    <span class="stat-label">Pending Forecasts</span>
+                    <div class="stat-value" id="forge-pending">0</div>
+                </div>
+                <div class="forge-stat">
+                    <span class="stat-label">Active Watches</span>
+                    <div class="stat-value" id="forge-watches">0</div>
+                </div>
+                <div class="forge-stat">
+                    <span class="stat-label">Recent Alerts</span>
+                    <div class="stat-value" id="forge-alerts">0</div>
+                </div>
+            </div>
+
+            <div class="forge-actions">
+                <input id="forge-asset" placeholder="ETH or contract">
+                <input id="forge-chain" placeholder="chain" value="base">
+                <select id="forge-horizon">
+                    <option value="1h">1h</option>
+                    <option value="4h">4h</option>
+                    <option value="24h" selected>24h</option>
+                    <option value="7d">7d</option>
+                </select>
+                <select id="forge-mode">
+                    <option value="composite" selected>composite</option>
+                    <option value="risk">risk</option>
+                    <option value="attention">attention</option>
+                    <option value="momentum">momentum</option>
+                </select>
+                <button class="btn-ai" onclick="recordForgeForecast()">Record Forecast</button>
+                <button class="btn-ai" onclick="addForgeWatch()">Add Watch</button>
+                <button class="btn-ai" onclick="runForgeWatchlist()">Run Watchlist</button>
+                <button class="btn-ai" onclick="runForgeBacktest()">Backtest</button>
+            </div>
+
+            <div class="forge-table-wrap">
+                <div>
+                    <div class="chart-title">Latest Alerts</div>
+                    <table class="mini-table">
+                        <thead>
+                            <tr>
+                                <th>Asset</th>
+                                <th>Metric</th>
+                                <th>Value</th>
+                                <th>Time</th>
+                            </tr>
+                        </thead>
+                        <tbody id="forge-alerts-body"></tbody>
+                    </table>
+                </div>
+                <div>
+                    <div class="chart-title">Watchlist</div>
+                    <table class="mini-table">
+                        <thead>
+                            <tr>
+                                <th>Target</th>
+                                <th>Cadence</th>
+                                <th>Modes</th>
+                            </tr>
+                        </thead>
+                        <tbody id="forge-watch-body"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="forge-output" id="forge-output">Forge output will appear here.</div>
         </div>
     </div>
 
@@ -513,6 +675,7 @@
                 
                 // Load Wisdom Feed
                 await loadWisdomFeed();
+                await loadForgePanel();
 
             } catch (error) {
                 document.getElementById('loading').innerHTML = `❌ Error: ${error.message}<br><a href="/" style="color:#00d4ff; font-size: 0.8em; margin-top:20px; display:block">Return Home</a>`;
@@ -547,6 +710,135 @@
             } catch (e) {
                 document.getElementById('wisdom-feed-content').innerHTML = `<span style="color:#ff4d4d">Error loading wisdom feed: ${e.message}</span>`;
             }
+        }
+
+        async function loadForgePanel() {
+            try {
+                const [ledgerResp, watchesResp, alertsResp] = await Promise.all([
+                    fetch('/api/ai/forge/ledger'),
+                    fetch('/api/ai/forge/watchlist?active_only=true'),
+                    fetch('/api/ai/forge/alerts?limit=10')
+                ]);
+                const ledger = await ledgerResp.json();
+                const watches = await watchesResp.json();
+                const alerts = await alertsResp.json();
+
+                document.getElementById('forge-accuracy').textContent =
+                    ledger.direction_accuracy_pct === null || ledger.direction_accuracy_pct === undefined
+                        ? 'n/a'
+                        : `${Number(ledger.direction_accuracy_pct).toFixed(1)}%`;
+                document.getElementById('forge-pending').textContent = ledger.pending ?? 0;
+                document.getElementById('forge-watches').textContent = Array.isArray(watches) ? watches.length : 0;
+                document.getElementById('forge-alerts').textContent = Array.isArray(alerts) ? alerts.length : 0;
+
+                renderForgeAlerts(Array.isArray(alerts) ? alerts : []);
+                renderForgeWatches(Array.isArray(watches) ? watches : []);
+            } catch (error) {
+                document.getElementById('forge-output').textContent = `Forge panel error: ${error.message}`;
+            }
+        }
+
+        function renderForgeAlerts(alerts) {
+            const body = document.getElementById('forge-alerts-body');
+            body.innerHTML = '';
+            if (!alerts.length) {
+                body.innerHTML = '<tr><td colspan="4" style="color:#888">No Forge alerts yet.</td></tr>';
+                return;
+            }
+
+            alerts.slice().reverse().forEach(alert => {
+                const row = document.createElement('tr');
+                const value = Number(alert.value);
+                row.innerHTML = `
+                    <td>${alert.asset || alert.token_address || 'n/a'}</td>
+                    <td>${alert.metric || 'n/a'}</td>
+                    <td class="${value >= 70 ? 'negative' : 'positive'}">${Number.isFinite(value) ? value.toFixed(2) : alert.value}</td>
+                    <td>${alert.created_at ? new Date(alert.created_at).toLocaleString() : 'n/a'}</td>
+                `;
+                body.appendChild(row);
+            });
+        }
+
+        function renderForgeWatches(watches) {
+            const body = document.getElementById('forge-watch-body');
+            body.innerHTML = '';
+            if (!watches.length) {
+                body.innerHTML = '<tr><td colspan="3" style="color:#888">No active watches.</td></tr>';
+                return;
+            }
+
+            watches.forEach(watch => {
+                const row = document.createElement('tr');
+                const target = watch.asset || watch.token_address || 'n/a';
+                row.innerHTML = `
+                    <td>${target}<div style="color:#888; font-size:0.8em">${watch.chain || 'base'}</div></td>
+                    <td>${watch.interval_minutes || 60}m<div style="color:#888; font-size:0.8em">${(watch.horizons || []).join(', ')}</div></td>
+                    <td>${(watch.modes || []).join(', ')}</td>
+                `;
+                body.appendChild(row);
+            });
+        }
+
+        function forgeTargetPayload() {
+            const target = document.getElementById('forge-asset').value.trim();
+            const chain = document.getElementById('forge-chain').value.trim() || 'base';
+            const horizon = document.getElementById('forge-horizon').value;
+            const mode = document.getElementById('forge-mode').value;
+            const isContract = target.startsWith('0x') || target.length > 32;
+
+            return {
+                asset: isContract ? null : target.toUpperCase(),
+                token_address: isContract ? target : null,
+                chain,
+                horizon,
+                mode
+            };
+        }
+
+        async function postForge(path, payload) {
+            const response = await fetch(path, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            document.getElementById('forge-output').textContent = JSON.stringify(data, null, 2);
+            await loadForgePanel();
+            return data;
+        }
+
+        async function recordForgeForecast() {
+            const payload = forgeTargetPayload();
+            if (!payload.asset && !payload.token_address) {
+                document.getElementById('forge-output').textContent = 'Enter a symbol or contract address first.';
+                return;
+            }
+            await postForge('/api/ai/forge/record', payload);
+        }
+
+        async function addForgeWatch() {
+            const payload = forgeTargetPayload();
+            if (!payload.asset && !payload.token_address) {
+                document.getElementById('forge-output').textContent = 'Enter a symbol or contract address first.';
+                return;
+            }
+            payload.horizons = ['1h', '4h', '24h'];
+            payload.modes = ['composite', 'risk'];
+            payload.interval_minutes = 60;
+            await postForge('/api/ai/forge/watchlist', payload);
+        }
+
+        async function runForgeWatchlist() {
+            await postForge('/api/ai/forge/watchlist/run', { force: true });
+        }
+
+        async function runForgeBacktest() {
+            const payload = forgeTargetPayload();
+            if (!payload.asset) {
+                document.getElementById('forge-output').textContent = 'Backtests require a symbol, not only a contract address.';
+                return;
+            }
+            await postForge('/api/ai/forge/backtest', payload);
         }
 
         async function showAIInsights(symbol) {

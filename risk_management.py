@@ -345,8 +345,15 @@ class RiskManager:
 
         # 4. Risk-Reward Check
         sl_pct = stop_loss_pct or self.config.stop_loss_pct
+        tp_pct = take_profit_pct or self.config.take_profit_pct
         stop_loss_price = entry_price * (1 - sl_pct / 100)
         stop_loss_distance = entry_price - stop_loss_price
+        calculated_risk_reward = risk_reward_ratio or (tp_pct / sl_pct if sl_pct else 0.0)
+        if calculated_risk_reward < self.config.min_risk_reward_ratio:
+            return False, (
+                f"Risk-reward ratio too low ({calculated_risk_reward:.2f} < "
+                f"{self.config.min_risk_reward_ratio:.2f})"
+            ), {}
         
         # Final validation
         return True, "Entry validated successfully", {
@@ -355,7 +362,8 @@ class RiskManager:
             'entry_price': entry_price,
             'position_size': target_position_size,
             'stop_loss_price': stop_loss_price,
-            'risk_amount': stop_loss_distance * target_position_size
+            'risk_amount': stop_loss_distance * target_position_size,
+            'risk_reward_ratio': calculated_risk_reward
         }
 
     def open_position(
@@ -386,8 +394,13 @@ class RiskManager:
         """
         # Validate entry
         is_valid, message, params = self.validate_entry(
-            token_address, entry_price, position_size,
-            stop_loss_pct, take_profit_pct, risk_reward_ratio
+            token_address=token_address,
+            symbol=symbol,
+            entry_price=entry_price,
+            target_position_size=position_size,
+            stop_loss_pct=stop_loss_pct,
+            take_profit_pct=take_profit_pct,
+            risk_reward_ratio=risk_reward_ratio
         )
 
         if not is_valid:

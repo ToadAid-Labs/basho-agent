@@ -31,6 +31,36 @@ class TestTelegramBot(unittest.IsolatedAsyncioTestCase):
                 buttons.append(button.text)
         self.assertIn("📊 Dashboard", buttons)
         self.assertIn("👛 Wallet", buttons)
+        self.assertIn("🔮 Forge", buttons)
+
+    def test_forge_target_parser_symbol_and_contract(self):
+        symbol_target = self.bot._parse_forge_target("ETH ethereum 1h composite")
+        contract_target = self.bot._parse_forge_target("0xabc base 1h,24h composite,risk")
+
+        self.assertEqual(symbol_target["asset"], "ETH")
+        self.assertIsNone(symbol_target["token_address"])
+        self.assertEqual(symbol_target["chain"], "ethereum")
+        self.assertEqual(symbol_target["horizon"], "1h")
+        self.assertEqual(symbol_target["mode"], "composite")
+
+        self.assertIsNone(contract_target["asset"])
+        self.assertEqual(contract_target["token_address"], "0xabc")
+        self.assertEqual(contract_target["chain"], "base")
+        self.assertEqual(contract_target["horizons"], ["1h", "24h"])
+        self.assertEqual(contract_target["modes"], ["composite", "risk"])
+
+    async def test_show_forge_menu(self):
+        query = AsyncMock()
+
+        await self.bot._show_forge_menu(query)
+
+        query.edit_message_text.assert_awaited_once()
+        args, kwargs = query.edit_message_text.call_args
+        self.assertIn("Trend Prediction Forge", args[0])
+        buttons = [button.text for row in kwargs["reply_markup"].inline_keyboard for button in row]
+        self.assertIn("🔎 Contract Check", buttons)
+        self.assertIn("👁 Add Watch", buttons)
+        self.assertIn("🚨 Latest Alerts", buttons)
 
     def test_chart_request_detection(self):
         self.assertTrue(self.bot._is_chart_request("pull a BTC chart and show me brother"))

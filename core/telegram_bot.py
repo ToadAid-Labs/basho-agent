@@ -288,7 +288,10 @@ class TelegramBot:
                 InlineKeyboardButton("👛 Wallet", callback_data="menu:wallet")
             ],
             [
+                InlineKeyboardButton("🔮 Forge", callback_data="menu:forge"),
                 InlineKeyboardButton("🤖 Agent Tools", callback_data="menu:agent"),
+            ],
+            [
                 InlineKeyboardButton("⚙️ Settings", callback_data="menu:settings")
             ]
         ]
@@ -339,6 +342,18 @@ class TelegramBot:
             return
         elif session.get("mode") == "wait_record_prediction":
             await self._process_record_prediction(update, text)
+            return
+        elif session.get("mode") == "wait_forge_contract":
+            await self._process_forge_contract(update, text)
+            return
+        elif session.get("mode") == "wait_forge_record":
+            await self._process_forge_record(update, text)
+            return
+        elif session.get("mode") == "wait_forge_watch":
+            await self._process_forge_watch(update, text)
+            return
+        elif session.get("mode") == "wait_forge_backtest":
+            await self._process_forge_backtest(update, text)
             return
 
         if self._is_tobyworld_archive_request(text):
@@ -437,6 +452,8 @@ class TelegramBot:
                 await self._show_risk_menu(query)
             elif action == "agent":
                 await self._show_agent_menu(query)
+            elif action == "forge":
+                await self._show_forge_menu(query)
             elif action == "settings":
                 await self._show_settings_menu(query)
             elif action == "wallet":
@@ -534,6 +551,47 @@ class TelegramBot:
             elif action == "record_prediction":
                 self.user_sessions[chat_id] = {"mode": "wait_record_prediction"}
                 await query.edit_message_text("🎯 Enter prediction as: SYMBOL PREDICTED_PRICE CONFIDENCE [HOURS]\nExample: ETH 2600 0.65 24")
+            elif action == "forge_contract":
+                self.user_sessions[chat_id] = {"mode": "wait_forge_contract"}
+                await query.edit_message_text("🔮 Enter contract and optional chain:\n0x... base")
+            elif action == "forge_record":
+                self.user_sessions[chat_id] = {"mode": "wait_forge_record"}
+                await query.edit_message_text(
+                    "📝 Enter forecast target:\n"
+                    "ETH ethereum 1h composite\n"
+                    "or\n"
+                    "0x... base 24h risk"
+                )
+            elif action == "forge_ledger":
+                await query.edit_message_text("⌛ Checking Forge ledger...")
+                from tools.trend_prediction_tools import forge_evaluate_due_predictions, forge_prediction_ledger_summary
+                await self._run_blocking(lambda: forge_evaluate_due_predictions(), timeout=60)
+                res = await self._run_blocking(lambda: forge_prediction_ledger_summary(), timeout=30)
+                await self._show_result(query, "🔮 Forge Ledger", res, "menu:forge")
+            elif action == "forge_add_watch":
+                self.user_sessions[chat_id] = {"mode": "wait_forge_watch"}
+                await query.edit_message_text(
+                    "👁 Enter watch:\n"
+                    "ETH ethereum 1h,4h,24h composite,risk\n"
+                    "or\n"
+                    "0x... base 1h,24h composite,risk"
+                )
+            elif action == "forge_list_watches":
+                from tools.trend_prediction_tools import forge_list_watches
+                res = await self._run_blocking(lambda: forge_list_watches(active_only=False, user_id=None), timeout=30)
+                await self._show_result(query, "👁 Forge Watches", res, "menu:forge")
+            elif action == "forge_alerts":
+                from tools.trend_prediction_tools import forge_list_alerts
+                res = await self._run_blocking(lambda: forge_list_alerts(limit=20), timeout=30)
+                await self._show_result(query, "🚨 Forge Alerts", res, "menu:forge")
+            elif action == "forge_run_watchlist":
+                await query.edit_message_text("⌛ Running Forge watchlist...")
+                from tools.trend_prediction_tools import forge_run_watchlist
+                res = await self._run_blocking(lambda: forge_run_watchlist(force=True), timeout=120)
+                await self._show_result(query, "👁 Forge Watchlist Run", res, "menu:forge")
+            elif action == "forge_backtest":
+                self.user_sessions[chat_id] = {"mode": "wait_forge_backtest"}
+                await query.edit_message_text("🧪 Enter backtest:\nETH 24h composite\nSOL 4h momentum")
             elif action == "market_regime":
                 await self._force_agent_action(chat_id, "Detect the current market regime for BTC and ETH using detect_market_regime. Keep it concise.", query.message)
             elif action == "trade_plan":
@@ -1092,6 +1150,23 @@ class TelegramBot:
         ]
         await query.edit_message_text("🤖 Agent Tools\n\nAsk the AI to analyze, backtest, plan, or review your portfolio.", reply_markup=InlineKeyboardMarkup(kb))
 
+    async def _show_forge_menu(self, query):
+        kb = [
+            [InlineKeyboardButton("🔎 Contract Check", callback_data="action:forge_contract"),
+             InlineKeyboardButton("📝 Record Forecast", callback_data="action:forge_record")],
+            [InlineKeyboardButton("📜 Ledger Accuracy", callback_data="action:forge_ledger"),
+             InlineKeyboardButton("🧪 Backtest", callback_data="action:forge_backtest")],
+            [InlineKeyboardButton("👁 Add Watch", callback_data="action:forge_add_watch"),
+             InlineKeyboardButton("📋 List Watches", callback_data="action:forge_list_watches")],
+            [InlineKeyboardButton("🚨 Latest Alerts", callback_data="action:forge_alerts"),
+             InlineKeyboardButton("▶️ Run Watchlist", callback_data="action:forge_run_watchlist")],
+            [InlineKeyboardButton("🔙 Back", callback_data="menu:main")]
+        ]
+        await query.edit_message_text(
+            "🔮 Trend Prediction Forge\n\nContract intelligence, forecast ledger, watchlists, alerts, and backtests.",
+            reply_markup=InlineKeyboardMarkup(kb),
+        )
+
     async def _show_settings_menu(self, query):
         kb = [
             [InlineKeyboardButton("📋 Current Settings", callback_data="action:settings_summary")],
@@ -1201,6 +1276,163 @@ class TelegramBot:
             await update.message.reply_text(res[:4090], disable_web_page_preview=True)
         finally:
             self.user_sessions.pop(chat_id, None)
+
+    async def _process_forge_contract(self, update: Update, text: str):
+        chat_id = update.effective_chat.id
+        try:
+            parts = text.split()
+            if not parts:
+                await update.message.reply_text("Format: CONTRACT [chain]\nExample: 0x... base")
+                return
+            token_address = parts[0]
+            chain = parts[1].lower() if len(parts) > 1 else "base"
+            await update.message.reply_text(f"⌛ Resolving contract on {chain}...")
+            from tools.trend_prediction_tools import forge_live_token_prediction, forge_resolve_contract
+
+            resolved = await self._run_blocking(lambda: forge_resolve_contract(token_address, chain), timeout=45)
+            forecast = await self._run_blocking(
+                lambda: forge_live_token_prediction(token_address=token_address, chain=chain, horizon="24h", mode="composite"),
+                timeout=90,
+            )
+            await self._send_chunked(update, f"🔎 Contract Resolve\n{resolved}")
+            await self._send_chunked(update, f"🔮 Forge Forecast\n{forecast}")
+        finally:
+            self.user_sessions.pop(chat_id, None)
+
+    async def _process_forge_record(self, update: Update, text: str):
+        chat_id = update.effective_chat.id
+        try:
+            target = self._parse_forge_target(text)
+            if not target:
+                await update.message.reply_text("Format: ASSET_OR_CONTRACT [chain] [horizon] [mode]\nExample: ETH ethereum 1h composite")
+                return
+            await update.message.reply_text("⌛ Recording Forge forecast...")
+            from tools.trend_prediction_tools import forge_record_live_prediction
+
+            res = await self._run_blocking(
+                lambda: forge_record_live_prediction(
+                    asset=target["asset"],
+                    token_address=target["token_address"],
+                    chain=target["chain"],
+                    horizon=target["horizon"],
+                    mode=target["mode"],
+                ),
+                timeout=90,
+            )
+            await self._send_chunked(update, res)
+        finally:
+            self.user_sessions.pop(chat_id, None)
+
+    async def _process_forge_watch(self, update: Update, text: str):
+        chat_id = update.effective_chat.id
+        try:
+            target = self._parse_forge_target(text)
+            if not target:
+                await update.message.reply_text("Format: ASSET_OR_CONTRACT [chain] [horizons_csv] [modes_csv]\nExample: ETH ethereum 1h,4h composite,risk")
+                return
+            horizons = target.get("horizons") or [target["horizon"]]
+            modes = target.get("modes") or [target["mode"]]
+            await update.message.reply_text("⌛ Adding Forge watch...")
+            from tools.trend_prediction_tools import forge_add_watch
+
+            res = await self._run_blocking(
+                lambda: forge_add_watch(
+                    asset=target["asset"],
+                    token_address=target["token_address"],
+                    chain=target["chain"],
+                    horizons=horizons,
+                    modes=modes,
+                    user_id=chat_id,
+                ),
+                timeout=30,
+            )
+            await self._send_chunked(update, res)
+        finally:
+            self.user_sessions.pop(chat_id, None)
+
+    async def _process_forge_backtest(self, update: Update, text: str):
+        chat_id = update.effective_chat.id
+        try:
+            parts = text.split()
+            if not parts:
+                await update.message.reply_text("Format: ASSET [horizon] [mode]\nExample: ETH 24h composite")
+                return
+            asset = parts[0].upper()
+            horizon = parts[1].lower() if len(parts) > 1 else "24h"
+            mode = parts[2].lower() if len(parts) > 2 else "composite"
+            await update.message.reply_text(f"⌛ Running Forge backtest for {asset}...")
+            from tools.trend_prediction_tools import forge_backtest_trend_model
+
+            res = await self._run_blocking(
+                lambda: forge_backtest_trend_model(asset=asset, horizon=horizon, mode=mode),
+                timeout=120,
+            )
+            await self._send_chunked(update, res)
+        finally:
+            self.user_sessions.pop(chat_id, None)
+
+    def _parse_forge_target(self, text: str) -> dict | None:
+        parts = text.split()
+        if not parts:
+            return None
+
+        valid_horizons = {"1h", "4h", "24h", "7d"}
+        valid_modes = {"attention", "momentum", "risk", "composite"}
+        known_chains = {"base", "ethereum", "eth", "bsc", "polygon", "arbitrum", "optimism", "solana"}
+
+        first = parts[0]
+        asset = None
+        token_address = None
+        chain = "base"
+        cursor = 1
+
+        if first.lower().startswith("0x") or len(first) > 32:
+            token_address = first
+        else:
+            asset = first.upper()
+
+        if cursor < len(parts) and parts[cursor].lower() in known_chains:
+            chain = parts[cursor].lower()
+            cursor += 1
+
+        horizon = "24h"
+        mode = "composite"
+        horizons = None
+        modes = None
+
+        if cursor < len(parts):
+            value = parts[cursor].lower()
+            if "," in value:
+                horizons = [item for item in value.split(",") if item in valid_horizons]
+                if horizons:
+                    horizon = horizons[0]
+                cursor += 1
+            elif value in valid_horizons:
+                horizon = value
+                cursor += 1
+
+        if cursor < len(parts):
+            value = parts[cursor].lower()
+            if "," in value:
+                modes = [item for item in value.split(",") if item in valid_modes]
+                if modes:
+                    mode = modes[0]
+            elif value in valid_modes:
+                mode = value
+
+        return {
+            "asset": asset,
+            "token_address": token_address,
+            "chain": chain,
+            "horizon": horizon,
+            "mode": mode,
+            "horizons": horizons,
+            "modes": modes,
+        }
+
+    async def _send_chunked(self, update: Update, text: str):
+        for i in range(0, len(text), 4090):
+            await update.message.reply_text(text[i:i+4090], disable_web_page_preview=True)
 
     async def _process_quick_trade(self, update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, text: str):
         chat_id = update.effective_chat.id

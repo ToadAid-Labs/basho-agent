@@ -22,6 +22,9 @@ from backend.database import Base, init_db, SessionLocal, User, Trade
 from backend.api import api_bp, initialize_paper_trading_for_user, get_current_prices
 from backend.portfolio_dashboard import Portfolio, PortfolioTracker
 from backend.prediction_tracker import PredictionLedger
+from backend.trend_forge_service import clear_forge_alerts, evaluate_due_predictions, list_forge_alerts, process_due_watchlist, record_live_prediction, run_live_backtest
+from backend.trend_prediction_ledger import TrendPredictionLedger
+from backend.trend_watchlist import TrendForgeWatchlist
 from memory.wisdom import WisdomStore
 
 # Agent imports
@@ -271,6 +274,162 @@ def get_prediction_accuracy_api():
         logger.exception("Error in get_prediction_accuracy_api")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/ai/forge/ledger')
+@login_required
+def get_forge_ledger_summary_api():
+    """Get Trend Prediction Forge ledger accuracy summary."""
+    asset = request.args.get('asset')
+    limit = request.args.get('limit', default=100, type=int)
+    try:
+        evaluated = evaluate_due_predictions(asset=asset, evaluate_all=False)
+        summary = TrendPredictionLedger().summary(asset=asset, limit=limit)
+        summary['newly_evaluated'] = len(evaluated)
+        return jsonify(summary)
+    except Exception as e:
+        logger.exception("Error in get_forge_ledger_summary_api")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ai/forge/record', methods=['POST'])
+@login_required
+def record_forge_prediction_api():
+    """Record a live Trend Prediction Forge forecast."""
+    data = request.get_json() or {}
+    asset = data.get('asset')
+    if not asset and not data.get('token_address'):
+        return jsonify({'error': 'asset or token_address is required'}), 400
+    try:
+        record = record_live_prediction(
+            asset=asset,
+            token_address=data.get('token_address'),
+            chain=data.get('chain', 'base'),
+            horizon=data.get('horizon', '24h'),
+            mode=data.get('mode', 'composite'),
+            historical_limit=int(data.get('historical_limit', 72)),
+        )
+        return jsonify(record)
+    except Exception as e:
+        logger.exception("Error in record_forge_prediction_api")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ai/forge/evaluate', methods=['POST'])
+@login_required
+def evaluate_forge_predictions_api():
+    """Evaluate due or selected Trend Prediction Forge ledger records."""
+    data = request.get_json() or {}
+    try:
+        evaluated = evaluate_due_predictions(
+            asset=data.get('asset'),
+            evaluate_all=bool(data.get('evaluate_all', False)),
+        )
+        return jsonify({'evaluated': len(evaluated), 'records': evaluated})
+    except Exception as e:
+        logger.exception("Error in evaluate_forge_predictions_api")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ai/forge/backtest', methods=['POST'])
+@login_required
+def forge_backtest_api():
+    """Run a Trend Prediction Forge backtest."""
+    data = request.get_json() or {}
+    asset = data.get('asset')
+    if not asset:
+        return jsonify({'error': 'asset is required for historical backtests'}), 400
+    try:
+        result = run_live_backtest(
+            asset=asset,
+            horizon=data.get('horizon', '24h'),
+            mode=data.get('mode', 'composite'),
+            lookback=int(data.get('lookback', 72)),
+            stride=int(data.get('stride', 6)),
+            limit=int(data.get('limit', 500)),
+        )
+        status = 400 if result.get('error') else 200
+        return jsonify(result), status
+    except Exception as e:
+        logger.exception("Error in forge_backtest_api")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ai/forge/watchlist')
+@login_required
+def forge_watchlist_api():
+    """List Trend Prediction Forge watchlist entries."""
+    active_only = request.args.get('active_only', 'false').lower() == 'true'
+    user_id = request.args.get('user_id', type=int)
+    try:
+        return jsonify(TrendForgeWatchlist().list(active_only=active_only, user_id=user_id))
+    except Exception as e:
+        logger.exception("Error in forge_watchlist_api")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ai/forge/watchlist', methods=['POST'])
+@login_required
+def add_forge_watch_api():
+    """Add a Trend Prediction Forge watchlist entry."""
+    data = request.get_json() or {}
+    if not data.get('asset') and not data.get('token_address'):
+        return jsonify({'error': 'asset or token_address is required'}), 400
+    try:
+        watch = TrendForgeWatchlist().add(
+            asset=data.get('asset'),
+            token_address=data.get('token_address'),
+            chain=data.get('chain', 'base'),
+            horizons=data.get('horizons'),
+            modes=data.get('modes'),
+            interval_minutes=int(data.get('interval_minutes', 60)),
+            thresholds=data.get('thresholds'),
+            user_id=data.get('user_id'),
+        )
+        return jsonify(watch)
+    except Exception as e:
+        logger.exception("Error in add_forge_watch_api")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ai/forge/watchlist/<watch_id>', methods=['DELETE'])
+@login_required
+def delete_forge_watch_api(watch_id: str):
+    """Delete a Trend Prediction Forge watchlist entry."""
+    try:
+        deleted = TrendForgeWatchlist().delete(watch_id)
+        return jsonify({'deleted': deleted})
+    except Exception as e:
+        logger.exception("Error in delete_forge_watch_api")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ai/forge/watchlist/run', methods=['POST'])
+@login_required
+def run_forge_watchlist_api():
+    """Process due or all Trend Prediction Forge watches."""
+    data = request.get_json() or {}
+    try:
+        result = process_due_watchlist(force=bool(data.get('force', False)))
+        return jsonify(result)
+    except Exception as e:
+        logger.exception("Error in run_forge_watchlist_api")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ai/forge/alerts')
+@login_required
+def forge_alerts_api():
+    """List persisted Trend Prediction Forge alert events."""
+    asset = request.args.get('asset')
+    watch_id = request.args.get('watch_id')
+    limit = request.args.get('limit', default=50, type=int)
+    try:
+        return jsonify(list_forge_alerts(asset=asset, watch_id=watch_id, limit=limit))
+    except Exception as e:
+        logger.exception("Error in forge_alerts_api")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ai/forge/alerts', methods=['DELETE'])
+@login_required
+def clear_forge_alerts_api():
+    """Clear persisted Trend Prediction Forge alert events."""
+    try:
+        return jsonify({'cleared': clear_forge_alerts()})
+    except Exception as e:
+        logger.exception("Error in clear_forge_alerts_api")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/wisdom')
 @login_required
 def get_wisdom_api():
@@ -408,6 +567,35 @@ def accuracy_tracker_loop():
                         logger.info(f"Emergency retraining complete for {symbol}.")
         except Exception as e:
             logger.error(f"Error in accuracy tracker loop: {e}")
+
+def trend_forge_tracker_loop():
+    """Background thread to evaluate due Trend Prediction Forge records."""
+    interval = int(os.getenv('TREND_FORGE_EVALUATION_INTERVAL_SECONDS', '3600'))
+    logger.info("Starting Trend Prediction Forge tracker background loop...")
+    while True:
+        try:
+            time.sleep(interval)
+            evaluated = evaluate_due_predictions(evaluate_all=False)
+            if evaluated:
+                logger.info("Evaluated %s Trend Prediction Forge records.", len(evaluated))
+                assets = {record.get('asset') for record in evaluated if record.get('asset')}
+                for asset in assets:
+                    summary = TrendPredictionLedger().summary(asset=asset)
+                    logger.info(
+                        "Forge accuracy for %s: direction=%s%% mean_score_error=%s",
+                        asset,
+                        summary.get('direction_accuracy_pct'),
+                        summary.get('mean_score_error'),
+                    )
+            watch_result = process_due_watchlist(force=False)
+            if watch_result["processed"]:
+                logger.info(
+                    "Processed %s Trend Prediction Forge watches and emitted %s alerts.",
+                    len(watch_result["processed"]),
+                    len(watch_result["alerts"]),
+                )
+        except Exception as e:
+            logger.error(f"Error in Trend Prediction Forge tracker loop: {e}")
 
 def sentiment_tracker_loop():
     """Background thread to monitor social/news sentiment and alert the risk manager."""
@@ -549,6 +737,9 @@ def initialize_app():
     
     alert_thread = threading.Thread(target=alert_processor_loop, daemon=True)
     alert_thread.start()
+
+    forge_thread = threading.Thread(target=trend_forge_tracker_loop, daemon=True)
+    forge_thread.start()
     
     # from core.orchestrator import autonomous_orchestrator_loop
     # orchestrator_thread = threading.Thread(target=autonomous_orchestrator_loop, daemon=True)

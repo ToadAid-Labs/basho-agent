@@ -75,6 +75,7 @@ def test_validate_entry_includes_risk_reward_ratio():
 
     valid, message, params = manager.validate_entry(
         token_address="ETH",
+        symbol="ETH",
         entry_price=100.0,
         target_position_size=1.0,
         stop_loss_pct=5.0,
@@ -149,8 +150,8 @@ def test_calculate_strategy_performance_uses_closed_trades(monkeypatch):
 def test_risk_manager_closes_matching_trade_not_last_trade():
     manager = RiskManager(DummyWallet(), DummyAnalyzer())
 
-    assert manager.open_position("ETH", 100.0, 1.0, stop_loss_pct=5.0, take_profit_pct=10.0, risk_reward_ratio=2.0)["success"]
-    assert manager.open_position("SOL", 50.0, 1.0, stop_loss_pct=5.0, take_profit_pct=10.0, risk_reward_ratio=2.0)["success"]
+    assert manager.open_position("ETH", "ETH", 100.0, 1.0, stop_loss_pct=5.0, take_profit_pct=10.0, risk_reward_ratio=2.0)["success"]
+    assert manager.open_position("SOL", "SOL", 50.0, 1.0, stop_loss_pct=5.0, take_profit_pct=10.0, risk_reward_ratio=2.0)["success"]
 
     result = manager._close_position("ETH", "take_profit", 120.0)
 
