@@ -225,7 +225,7 @@ class Agent:
         start_request = time.time()
         self.messages.append({"role": "user", "content": user_input})
         tool_calls_executed = 0
-        last_retryable_failure_signature: str | None = None
+        retryable_failure_signatures: set[str] = set()
 
         final_text = ""
         for iteration in range(MAX_ITERATIONS):
@@ -275,19 +275,19 @@ class Agent:
                     assistant_content.append({"type": "thought", "text": block.text})
                     # We don't yield thoughts to the main chat pane yet, but could to a log
                 elif block.type == "tool_use":
-                    if self.max_tool_calls and tool_calls_executed >= self.max_tool_calls:
-                        final_text = _tool_budget_message()
-                        yield {"type": "final_response", "content": final_text}
-                        return
-
                     tool_name = block.name
                     tool_input = block.input
                     tool_use_id = block.id
                     thought_signature = getattr(block, "thought_signature", None)
                     call_signature = _tool_call_signature(tool_name, tool_input)
 
-                    if call_signature == last_retryable_failure_signature:
+                    if call_signature in retryable_failure_signatures:
                         final_text = _same_condition_retry_message(tool_name)
+                        yield {"type": "final_response", "content": final_text}
+                        return
+
+                    if self.max_tool_calls and tool_calls_executed >= self.max_tool_calls:
+                        final_text = _tool_budget_message()
                         yield {"type": "final_response", "content": final_text}
                         return
                     
@@ -327,11 +327,8 @@ class Agent:
                         self._save_messages()
                         yield {"type": "final_response", "content": final_text}
                         return
-                    last_retryable_failure_signature = (
-                        call_signature
-                        if _is_retryable_same_condition_failure(tool_name, result)
-                        else None
-                    )
+                    if _is_retryable_same_condition_failure(tool_name, result):
+                        retryable_failure_signatures.add(call_signature)
 
             if assistant_content:
                 self.messages.append({"role": "assistant", "content": assistant_content})
@@ -354,7 +351,7 @@ class Agent:
         start_request = time.time()
         self.messages.append({"role": "user", "content": user_input})
         tool_calls_executed = 0
-        last_retryable_failure_signature: str | None = None
+        retryable_failure_signatures: set[str] = set()
 
         final_text = ""
         for iteration in range(MAX_ITERATIONS):
@@ -385,17 +382,17 @@ class Agent:
                 elif block.type == "thought":
                     assistant_content.append({"type": "thought", "text": block.text})
                 elif block.type == "tool_use":
-                    if self.max_tool_calls and tool_calls_executed >= self.max_tool_calls:
-                        return _tool_budget_message()
-
                     tool_name = block.name
                     tool_input = block.input
                     tool_use_id = block.id
                     thought_signature = getattr(block, "thought_signature", None)
                     call_signature = _tool_call_signature(tool_name, tool_input)
 
-                    if call_signature == last_retryable_failure_signature:
+                    if call_signature in retryable_failure_signatures:
                         return _same_condition_retry_message(tool_name)
+
+                    if self.max_tool_calls and tool_calls_executed >= self.max_tool_calls:
+                        return _tool_budget_message()
 
                     self.console.print(f"[dim]Calling tool: {tool_name}[/dim]")
                     tool_calls_executed += 1
@@ -428,11 +425,8 @@ class Agent:
                         self._save_messages()
                         logger.info(f"Total request duration: {time.time() - start_request:.3f}s")
                         return final_text
-                    last_retryable_failure_signature = (
-                        call_signature
-                        if _is_retryable_same_condition_failure(tool_name, result)
-                        else None
-                    )
+                    if _is_retryable_same_condition_failure(tool_name, result):
+                        retryable_failure_signatures.add(call_signature)
 
             if assistant_content:
                 self.messages.append({"role": "assistant", "content": assistant_content})
