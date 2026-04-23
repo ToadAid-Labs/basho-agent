@@ -31,7 +31,7 @@ load_dotenv()
 # Flask backend configuration
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:5000")
 API_TIMEOUT = 15  # seconds
-AGENT_TIMEOUT = int(os.getenv("TELEGRAM_AGENT_TIMEOUT_SECONDS", "900"))
+AGENT_TIMEOUT = int(os.getenv("TELEGRAM_AGENT_TIMEOUT_SECONDS", "120"))
 MAX_TELEGRAM_IMAGE_BYTES = int(os.getenv("TELEGRAM_MAX_IMAGE_BYTES", str(10 * 1024 * 1024)))
 CHART_REQUEST_RE = re.compile(r"\b(chart|candlestick|candle|price\s+chart)\b", re.IGNORECASE)
 SYMBOL_RE = re.compile(r"\b(BTC|ETH|SOL|BNB|XRP|ADA|DOGE|AVAX|LINK|MATIC|ARB|OP|PEPE|WIF|BONK)\b", re.IGNORECASE)
@@ -379,6 +379,12 @@ class TelegramBot:
 
         # Default: AI Chat
         agent = self._get_agent(chat_id)
+        print(f"Received Telegram message from {chat_id}: {text[:120]}", flush=True)
+        status_message = None
+        try:
+            status_message = await update.message.reply_text("⌛ Working on that...")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to send working status to %s: %s", chat_id, e)
         
         result_holder = [""]
         error_holder = [""]
@@ -389,7 +395,7 @@ class TelegramBot:
             except Exception as e:
                 error_holder[0] = str(e)
 
-        thread = Thread(target=run_agent)
+        thread = Thread(target=run_agent, daemon=True)
         thread.start()
         
         # Keep sending "typing" indicator while thread is alive
@@ -411,8 +417,10 @@ class TelegramBot:
                 return
             await update.message.reply_text(
                 f"⚠️ AI Agent is still working after {AGENT_TIMEOUT} seconds. "
-                "Try a smaller request or raise TELEGRAM_AGENT_TIMEOUT_SECONDS."
+                "The request was left running in the background. Try a smaller request "
+                "or raise TELEGRAM_AGENT_TIMEOUT_SECONDS."
             )
+            print(f"Telegram agent timed out for {chat_id} after {AGENT_TIMEOUT}s", flush=True)
             return
 
         if error_holder[0]:
@@ -425,6 +433,11 @@ class TelegramBot:
             return
         response = self._user_safe_agent_response(result_holder[0] or "(no response)")
         response = self._clean_response(response)
+        if status_message is not None:
+            try:
+                await status_message.delete()
+            except Exception:
+                pass
 
         # Split and send response
         for i in range(0, len(response), 4090):
