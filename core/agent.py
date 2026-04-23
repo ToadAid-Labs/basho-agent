@@ -225,6 +225,7 @@ class Agent:
         start_request = time.time()
         self.messages.append({"role": "user", "content": user_input})
         tool_calls_executed = 0
+        last_retryable_failure_signature: str | None = None
 
         final_text = ""
         for iteration in range(MAX_ITERATIONS):
@@ -283,6 +284,12 @@ class Agent:
                     tool_input = block.input
                     tool_use_id = block.id
                     thought_signature = getattr(block, "thought_signature", None)
+                    call_signature = _tool_call_signature(tool_name, tool_input)
+
+                    if call_signature == last_retryable_failure_signature:
+                        final_text = _same_condition_retry_message(tool_name)
+                        yield {"type": "final_response", "content": final_text}
+                        return
                     
                     yield {"type": "tool_start", "name": tool_name, "input": tool_input}
 
@@ -320,6 +327,11 @@ class Agent:
                         self._save_messages()
                         yield {"type": "final_response", "content": final_text}
                         return
+                    last_retryable_failure_signature = (
+                        call_signature
+                        if _is_retryable_same_condition_failure(tool_name, result)
+                        else None
+                    )
 
             if assistant_content:
                 self.messages.append({"role": "assistant", "content": assistant_content})
@@ -342,6 +354,7 @@ class Agent:
         start_request = time.time()
         self.messages.append({"role": "user", "content": user_input})
         tool_calls_executed = 0
+        last_retryable_failure_signature: str | None = None
 
         final_text = ""
         for iteration in range(MAX_ITERATIONS):
@@ -379,6 +392,10 @@ class Agent:
                     tool_input = block.input
                     tool_use_id = block.id
                     thought_signature = getattr(block, "thought_signature", None)
+                    call_signature = _tool_call_signature(tool_name, tool_input)
+
+                    if call_signature == last_retryable_failure_signature:
+                        return _same_condition_retry_message(tool_name)
 
                     self.console.print(f"[dim]Calling tool: {tool_name}[/dim]")
                     tool_calls_executed += 1
@@ -411,6 +428,11 @@ class Agent:
                         self._save_messages()
                         logger.info(f"Total request duration: {time.time() - start_request:.3f}s")
                         return final_text
+                    last_retryable_failure_signature = (
+                        call_signature
+                        if _is_retryable_same_condition_failure(tool_name, result)
+                        else None
+                    )
 
             if assistant_content:
                 self.messages.append({"role": "assistant", "content": assistant_content})
@@ -459,6 +481,26 @@ def _is_terminal_tool_failure(tool_name: str, result: str) -> bool:
     if tool_name != "analyze_chart_vision":
         return False
     return isinstance(result, str) and result.strip().lower().startswith("error:")
+
+
+def _tool_call_signature(tool_name: str, tool_input: dict[str, Any]) -> str:
+    return json.dumps({"name": tool_name, "input": tool_input}, sort_keys=True, default=str)
+
+
+def _is_retryable_same_condition_failure(tool_name: str, result: str) -> bool:
+    if tool_name != "execute_paper_trade":
+        return False
+    return isinstance(result, str) and result.startswith("Cannot get current price for ")
+
+
+def _same_condition_retry_message(tool_name: str) -> str:
+    if tool_name == "execute_paper_trade":
+        return (
+            "I stopped because the paper trade was about to retry the same unresolved "
+            "price request without new inputs. Resolve a price first and pass it as "
+            "`entry_price`, or use a supported symbol."
+        )
+    return "I stopped because a tool was about to repeat the same failed request without new inputs."
 
 
 def _user_safe_tool_failure(tool_name: str) -> str:

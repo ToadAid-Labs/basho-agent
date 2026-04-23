@@ -3,11 +3,12 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import sys
 
-from backend.paper_trading import PaperTradingAccount
+from backend.paper_trading import PaperTradingAccount, create_paper_trading_account
 from backend.models import calculate_win_rate, calculate_strategy_performance, get_closed_trades
 from backend.portfolio_dashboard import Portfolio
 from risk_management import RiskManager
 from tools import strategy_tools
+from tools import trading_control
 from backend.portfolio_dashboard import calculate_monthly_volume_stats_from_history
 
 
@@ -75,6 +76,40 @@ def test_paper_trading_statistics_has_win_rate():
 
     assert round(stats["win_rate"], 2) == 100.0
     assert stats["closed_trades"] == 1
+
+
+def test_execute_paper_trade_uses_entry_price_when_live_price_unresolved(monkeypatch):
+    create_paper_trading_account(91, 1_000.0)
+    monkeypatch.setattr(trading_control, "_get_live_price", lambda symbol: 0.0)
+
+    result = trading_control.execute_paper_trade(
+        user_id=91,
+        symbol="TOBY",
+        side="buy",
+        amount=100.0,
+        entry_price=0.01,
+    )
+
+    assert "Paper BUY Executed" in result
+    assert "Symbol: TOBY" in result
+    assert "Price: $0.01" in result
+
+
+def test_execute_paper_trade_prefers_live_price_for_normal_symbols(monkeypatch):
+    account = create_paper_trading_account(92, 1_000.0)
+    monkeypatch.setattr(trading_control, "_get_live_price", lambda symbol: 200.0)
+
+    result = trading_control.execute_paper_trade(
+        user_id=92,
+        symbol="ETH",
+        side="buy",
+        amount=200.0,
+        entry_price=100.0,
+    )
+
+    assert "Paper BUY Executed" in result
+    assert account.positions["ETH"] == Decimal("1.0")
+    assert account.paper_trades[-1]["entry_price"] == 200.0
 
 
 def test_validate_entry_includes_risk_reward_ratio():

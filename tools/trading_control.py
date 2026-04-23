@@ -195,7 +195,11 @@ def get_portfolio_status(user_id: int) -> str:
             },
             "entry_price": {
                 "type": "number",
-                "description": "Optional planned entry price for logging/reference",
+                "description": (
+                    "Optional externally resolved USD entry price. Normal listed symbols "
+                    "use live market price; this is used as a fallback when the internal "
+                    "price source cannot resolve the symbol."
+                ),
             },
             "stop_loss": {
                 "type": "number",
@@ -232,9 +236,11 @@ def execute_paper_trade(
         if normalized_side not in {"buy", "sell"}:
             return "Invalid trade side. Use side='buy'/'sell' or action='buy'/'sell'."
 
-        price = _get_live_price(symbol)
+        live_price = _get_live_price(symbol)
+        entry_price_override = float(entry_price) if entry_price is not None else 0.0
+        price = live_price or entry_price_override
 
-        if price == 0:
+        if price <= 0:
             return f"Cannot get current price for {symbol}. Trade aborted."
 
         if quantity is not None and quantity > 0:
