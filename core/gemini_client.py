@@ -35,12 +35,20 @@ def validate_gemini_oauth_scopes(creds) -> None:
         )
 
 
+def _gemini_reauth_message() -> str:
+    return (
+        "Gemini OAuth needs reauthentication. Run `python3 agent.py login` and "
+        "choose Google/Gemini Web Auth again, or set `GEMINI_API_KEY` in `.env`."
+    )
+
+
 class GeminiClient:
     """Wrapper around the Google Gemini API."""
 
     def __init__(self, model: str | None = None):
         self.token_path = os.path.expanduser(os.getenv("GOOGLE_TOKEN_PATH", "~/.agent_google_token.json"))
         self.api_key = os.getenv("GEMINI_API_KEY")
+        self.request_timeout_seconds = float(os.getenv("GEMINI_REQUEST_TIMEOUT_SECONDS", "45"))
         self._token_mtime: float | None = None
         raw_model = model or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         # Ensure model name doesn't have double prefix if using legacy SDK
@@ -56,12 +64,19 @@ class GeminiClient:
         elif self.api_key:
             # Use simple API Key
             from google import genai
-            self.client = genai.Client(api_key=self.api_key)
+            from google.genai import types
+
+            self.client = genai.Client(
+                api_key=self.api_key,
+                http_options=types.HttpOptions(timeout=int(self.request_timeout_seconds * 1000)),
+            )
         else:
             raise ValueError("No Gemini authentication found. Run 'python3 agent.py login'.")
 
     def _configure_legacy_oauth_client(self) -> None:
         """Load OAuth credentials from disk and rebuild the legacy SDK client."""
+        from google.auth.exceptions import RefreshError
+        from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
 
         with warnings.catch_warnings():
@@ -71,9 +86,15 @@ class GeminiClient:
 
         creds = Credentials.from_authorized_user_file(self.token_path)
         validate_gemini_oauth_scopes(creds)
+        if creds.expired:
+            try:
+                creds.refresh(Request())
+            except RefreshError as exc:
+                raise ValueError(_gemini_reauth_message()) from exc
         legacy_genai.configure(credentials=creds)
         self.client = legacy_genai.GenerativeModel(model_name=self.model_name)
         self.proto = proto
+        self.creds = creds
         self.uses_legacy_oauth_sdk = True
         self._token_mtime = self._current_token_mtime()
 
@@ -98,6 +119,21 @@ class GeminiClient:
         self._configure_legacy_oauth_client()
         return True
 
+    def _ensure_legacy_oauth_fresh(self) -> None:
+        if not self.uses_legacy_oauth_sdk or self.api_key:
+            return
+        from google.auth.exceptions import RefreshError
+        from google.auth.transport.requests import Request
+
+        creds = getattr(self, "creds", None)
+        if creds is None:
+            return
+        if not creds.valid or creds.expired:
+            try:
+                creds.refresh(Request())
+            except RefreshError as exc:
+                raise ValueError(_gemini_reauth_message()) from exc
+
     def create_message(
         self,
         messages: list[dict[str, Any]],
@@ -115,6 +151,7 @@ class GeminiClient:
 
         if self.uses_legacy_oauth_sdk:
             self._reload_legacy_oauth_if_token_changed()
+            self._ensure_legacy_oauth_fresh()
             # Legacy SDK Tool mapping
             legacy_tools = []
             if cleaned_tools:
@@ -131,6 +168,7 @@ class GeminiClient:
             response = self.client.generate_content(
                 contents,
                 tools=legacy_tools if legacy_tools else None,
+                request_options={"timeout": self.request_timeout_seconds},
             )
             return GeminiResponse(response)
 
@@ -174,11 +212,13 @@ class GeminiClient:
 
         if self.uses_legacy_oauth_sdk:
             self._reload_legacy_oauth_if_token_changed()
+            self._ensure_legacy_oauth_fresh()
             response = self.client.generate_content(
                 [
                     {"mime_type": mime_type, "data": image_bytes},
                     safe_prompt,
-                ]
+                ],
+                request_options={"timeout": self.request_timeout_seconds},
             )
             return getattr(response, "text", "") or _empty_response_message(response)
 

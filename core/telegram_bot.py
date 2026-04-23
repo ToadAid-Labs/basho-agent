@@ -385,7 +385,6 @@ class TelegramBot:
             raise ApplicationHandlerStop
 
         # Default: AI Chat
-        agent = self._get_agent(chat_id)
         print(f"Received Telegram message from {chat_id}: {text[:120]}", flush=True)
         status_message = None
         try:
@@ -398,6 +397,7 @@ class TelegramBot:
 
         def run_agent():
             try:
+                agent = self._get_agent(chat_id)
                 result_holder[0] = agent.chat(text)
             except Exception as e:
                 error_holder[0] = str(e)

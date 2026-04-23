@@ -5,6 +5,7 @@ from core.agent import Agent
 from core.agent import (
     _build_provider_messages,
     _format_direct_tool_response,
+    _should_disable_tools,
     _should_return_gemini_tool_directly,
 )
 from core.provider import ModelProvider
@@ -72,6 +73,33 @@ def test_format_direct_tool_response_includes_intro_and_results():
     )
 
     assert response == "Checking ETH.\n\nTool result from check_price:\nETH price: $1,234"
+
+
+def test_no_tools_prompt_disables_tool_definitions(monkeypatch):
+    class FakeClient:
+        model = "fake"
+
+        def __init__(self):
+            self.tool_args = []
+
+        def create_message(self, **kwargs):
+            self.tool_args.append(kwargs["tools"])
+            return SimpleNamespace(content=[SimpleNamespace(type="text", text="2 + 2 = 4.")])
+
+    fake_client = FakeClient()
+
+    monkeypatch.setattr(agent_module, "create_client", lambda provider: fake_client)
+    monkeypatch.setattr(agent_module, "get_tool_definitions", lambda: [{"name": "execute_paper_trade"}])
+    monkeypatch.setattr(agent_module, "latest_summary", lambda sid: None)
+    monkeypatch.setattr(agent_module, "save_session_for_provider", lambda *args, **kwargs: None)
+
+    agent = Agent(provider=ModelProvider.ANTHROPIC, sid="test", history=[])
+
+    response = agent.chat("No tools for this one. Reply in one short sentence: what is 2 + 2?")
+
+    assert _should_disable_tools("No tools for this one.")
+    assert response == "2 + 2 = 4."
+    assert fake_client.tool_args == [[]]
 
 
 def test_agent_stops_interleaved_paper_trade_price_retry_before_budget(monkeypatch):

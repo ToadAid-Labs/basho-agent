@@ -104,6 +104,23 @@ class TestTelegramBot(unittest.IsolatedAsyncioTestCase):
             "Awake. Telegram is connected and the bot process is running."
         )
 
+    async def test_agent_creation_error_replies_after_working_status(self):
+        update = MagicMock(spec=Update)
+        update.effective_chat.id = self.chat_id
+        update.message = AsyncMock(spec=Message)
+        update.message.message_id = 9
+        update.message.text = "No tools for this one. Reply in one short sentence: what is 2 + 2?"
+        context = MagicMock(spec=ContextTypes.DEFAULT_TYPE)
+        context.bot.send_chat_action = AsyncMock()
+        self.bot._get_agent = MagicMock(side_effect=ValueError("Gemini OAuth needs reauthentication."))
+
+        await self.bot._handle_message(update, context)
+
+        self.bot._get_agent.assert_called_once_with(self.chat_id)
+        self.assertEqual(update.message.reply_text.await_count, 2)
+        self.assertEqual(update.message.reply_text.await_args_list[0].args[0], "⌛ Working on that...")
+        self.assertIn("Gemini OAuth needs reauthentication", update.message.reply_text.await_args_list[1].args[0])
+
     @patch("tools.vision_analysis.generate_price_chart_image")
     async def test_handle_chart_request_sends_photo(self, mock_chart):
         mock_chart.return_value = SimpleNamespace(symbol="BTC", image_bytes=b"png-bytes", error=None)

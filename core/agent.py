@@ -229,6 +229,7 @@ class Agent:
         executed_paper_trade_signatures: set[str] = set()
 
         final_text = ""
+        tools_for_request = [] if _should_disable_tools(user_input) else self.tool_definitions
         for iteration in range(MAX_ITERATIONS):
             iter_start = time.time()
             try:
@@ -248,7 +249,7 @@ class Agent:
                     _log_provider_context(self.messages, provider_messages)
                     response = self.client.create_message(
                         messages=provider_messages,
-                        tools=self.tool_definitions,
+                        tools=tools_for_request,
                         system_prompt=self.system_prompt,
                     )
                     logger.info(f"LLM call (non-streaming) took {time.time() - llm_start:.3f}s")
@@ -363,6 +364,7 @@ class Agent:
         executed_paper_trade_signatures: set[str] = set()
 
         final_text = ""
+        tools_for_request = [] if _should_disable_tools(user_input) else self.tool_definitions
         for iteration in range(MAX_ITERATIONS):
             iter_start = time.time()
             try:
@@ -371,7 +373,7 @@ class Agent:
                 _log_provider_context(self.messages, provider_messages)
                 response = self.client.create_message(
                     messages=provider_messages,
-                    tools=self.tool_definitions,
+                    tools=tools_for_request,
                     system_prompt=self.system_prompt,
                 )
                 logger.info(f"LLM call took {time.time() - llm_start:.3f}s")
@@ -483,6 +485,18 @@ def _build_messages(history: list[dict[dict, Any]]) -> list[dict[str, Any]]:
 
 def _should_return_gemini_tool_directly(provider: ModelProvider, thought_signature: Any) -> bool:
     return False
+
+
+def _should_disable_tools(user_input: str) -> bool:
+    normalized = user_input.strip().lower()
+    no_tool_markers = (
+        "no tools",
+        "without tools",
+        "don't use tools",
+        "do not use tools",
+        "no tool calls",
+    )
+    return any(marker in normalized for marker in no_tool_markers)
 
 
 def _is_terminal_tool_failure(tool_name: str, result: str) -> bool:
