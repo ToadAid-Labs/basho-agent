@@ -88,6 +88,22 @@ class TestTelegramBot(unittest.IsolatedAsyncioTestCase):
         update.message.reply_text.assert_awaited_once()
         self.assertIn("Voice context restored", update.message.reply_text.call_args.args[0])
 
+    async def test_wake_check_bypasses_agent(self):
+        update = MagicMock(spec=Update)
+        update.effective_chat.id = self.chat_id
+        update.message = AsyncMock(spec=Message)
+        update.message.message_id = 8
+        update.message.text = "brother, are you awake?"
+        context = MagicMock(spec=ContextTypes.DEFAULT_TYPE)
+        self.bot._get_agent = MagicMock(side_effect=AssertionError("generic agent path should not run"))
+
+        await self.bot._handle_message(update, context)
+
+        self.bot._get_agent.assert_not_called()
+        update.message.reply_text.assert_awaited_once_with(
+            "Awake. Telegram is connected and the bot process is running."
+        )
+
     @patch("tools.vision_analysis.generate_price_chart_image")
     async def test_handle_chart_request_sends_photo(self, mock_chart):
         mock_chart.return_value = SimpleNamespace(symbol="BTC", image_bytes=b"png-bytes", error=None)

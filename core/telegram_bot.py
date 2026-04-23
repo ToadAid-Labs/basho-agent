@@ -369,6 +369,13 @@ class TelegramBot:
             await self._handle_tobyworld_archive_request(update)
             return
 
+        if self._is_wake_check(text):
+            print(f"Received Telegram wake check from {chat_id}: {text[:120]}", flush=True)
+            await update.message.reply_text(
+                "Awake. Telegram is connected and the bot process is running."
+            )
+            return
+
         if self._is_chart_request(text):
             self._mark_chart_message_handled(message_key)
             try:
@@ -850,6 +857,14 @@ class TelegramBot:
         return "tobyworld_master_archive.md" in lower_text or (
             "tobyworld" in lower_text and "voice" in lower_text
         )
+
+    def _is_wake_check(self, text: str) -> bool:
+        normalized = re.sub(r"[^a-z0-9\s]", " ", text.lower())
+        words = set(normalized.split())
+        if not words:
+            return False
+        wake_words = {"awake", "alive", "online", "ping", "status", "there"}
+        return bool(words & wake_words) and len(words) <= 8
 
     async def _handle_tobyworld_archive_request(self, update: Update) -> None:
         archive_path = Path(__file__).resolve().parents[1] / "workspace" / "tobyworld_master_archive.md"
