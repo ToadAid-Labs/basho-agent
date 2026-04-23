@@ -226,6 +226,7 @@ class Agent:
         self.messages.append({"role": "user", "content": user_input})
         tool_calls_executed = 0
         retryable_failure_signatures: set[str] = set()
+        executed_paper_trade_signatures: set[str] = set()
 
         final_text = ""
         for iteration in range(MAX_ITERATIONS):
@@ -286,6 +287,11 @@ class Agent:
                         yield {"type": "final_response", "content": final_text}
                         return
 
+                    if call_signature in executed_paper_trade_signatures:
+                        final_text = _duplicate_paper_trade_message()
+                        yield {"type": "final_response", "content": final_text}
+                        return
+
                     if self.max_tool_calls and tool_calls_executed >= self.max_tool_calls:
                         final_text = _tool_budget_message()
                         yield {"type": "final_response", "content": final_text}
@@ -329,6 +335,8 @@ class Agent:
                         return
                     if _is_retryable_same_condition_failure(tool_name, result):
                         retryable_failure_signatures.add(call_signature)
+                    if tool_name == "execute_paper_trade":
+                        executed_paper_trade_signatures.add(call_signature)
 
             if assistant_content:
                 self.messages.append({"role": "assistant", "content": assistant_content})
@@ -352,6 +360,7 @@ class Agent:
         self.messages.append({"role": "user", "content": user_input})
         tool_calls_executed = 0
         retryable_failure_signatures: set[str] = set()
+        executed_paper_trade_signatures: set[str] = set()
 
         final_text = ""
         for iteration in range(MAX_ITERATIONS):
@@ -391,6 +400,9 @@ class Agent:
                     if call_signature in retryable_failure_signatures:
                         return _same_condition_retry_message(tool_name)
 
+                    if call_signature in executed_paper_trade_signatures:
+                        return _duplicate_paper_trade_message()
+
                     if self.max_tool_calls and tool_calls_executed >= self.max_tool_calls:
                         return _tool_budget_message()
 
@@ -427,6 +439,8 @@ class Agent:
                         return final_text
                     if _is_retryable_same_condition_failure(tool_name, result):
                         retryable_failure_signatures.add(call_signature)
+                    if tool_name == "execute_paper_trade":
+                        executed_paper_trade_signatures.add(call_signature)
 
             if assistant_content:
                 self.messages.append({"role": "assistant", "content": assistant_content})
@@ -495,6 +509,13 @@ def _same_condition_retry_message(tool_name: str) -> str:
             "`entry_price`, or use a supported symbol."
         )
     return "I stopped because a tool was about to repeat the same failed request without new inputs."
+
+
+def _duplicate_paper_trade_message() -> str:
+    return (
+        "I stopped because the same paper trade was already attempted in this request. "
+        "Check the trade history or portfolio before placing another order."
+    )
 
 
 def _user_safe_tool_failure(tool_name: str) -> str:
