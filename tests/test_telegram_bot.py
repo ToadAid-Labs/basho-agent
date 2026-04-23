@@ -73,6 +73,15 @@ class TestTelegramBot(unittest.IsolatedAsyncioTestCase):
         self.assertIn("could not complete", response)
         self.assertNotIn("[stdout]", response)
 
+    def test_clean_response_strips_gemini_unsigned_tool_markers(self):
+        response = self.bot._clean_response(
+            "[Tool call recorded without Gemini thought signature: read_strategy]"
+            "[Tool call recorded without Gemini thought signature: read_strategy]"
+            "Refreshed. Memory restored."
+        )
+
+        self.assertEqual(response, "Refreshed. Memory restored.")
+
     async def test_tobyworld_archive_request_bypasses_agent(self):
         update = MagicMock(spec=Update)
         update.effective_chat.id = self.chat_id

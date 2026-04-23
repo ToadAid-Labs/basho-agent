@@ -949,6 +949,11 @@ class TelegramBot:
         text = re.sub(r"['\"]\}\s*$", "", text)
         text = re.sub(r",?\s*['\"]thought_signature['\"]:\s*None", "", text)
         text = re.sub(r"\[\s*['\"]thought_signature['\"]:\s*None\s*\]", "", text)
+        text = re.sub(
+            r"\[Tool call recorded without Gemini thought signature:\s*[^\]]+\]\s*",
+            "",
+            text,
+        )
         
         # 3. Fix literal \n strings (backslash + n) into actual newlines
         text = text.replace("\\n", "\n")
