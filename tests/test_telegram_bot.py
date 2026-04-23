@@ -93,7 +93,7 @@ class TestTelegramBot(unittest.IsolatedAsyncioTestCase):
         update.effective_chat.id = self.chat_id
         update.message = AsyncMock(spec=Message)
         update.message.message_id = 8
-        update.message.text = "brother, are you awake?"
+        update.message.text = "wake up brother"
         context = MagicMock(spec=ContextTypes.DEFAULT_TYPE)
         self.bot._get_agent = MagicMock(side_effect=AssertionError("generic agent path should not run"))
 

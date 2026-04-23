@@ -863,7 +863,7 @@ class TelegramBot:
         words = set(normalized.split())
         if not words:
             return False
-        wake_words = {"awake", "alive", "online", "ping", "status", "there"}
+        wake_words = {"awake", "wake", "alive", "online", "ping", "status", "there", "hello", "hi"}
         return bool(words & wake_words) and len(words) <= 8
 
     async def _handle_tobyworld_archive_request(self, update: Update) -> None:
