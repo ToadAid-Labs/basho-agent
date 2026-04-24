@@ -319,14 +319,48 @@ class TelegramBot:
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages (pass to AI Agent)."""
         chat_id = update.effective_chat.id
+        message = update.message
+        chat = update.effective_chat
         message_key = self._message_key(update)
         if message_key in self._handled_chart_messages:
             raise ApplicationHandlerStop
 
-        text = update.message.text.strip()
-        
+        text = (message.text or "").strip()
+
         if not text:
             return
+
+        # In group chats, stay silent unless the bot is explicitly called.
+        # This prevents the agent from answering random group messages.
+        if chat and chat.type in ("group", "supergroup"):
+            bot_username = (context.bot.username or "").lower()
+            allowed_mentions = {"@agent", "@tobycoder_bot"}
+            if bot_username:
+                allowed_mentions.add(f"@{bot_username}")
+
+            is_mentioned = False
+            if message.entities:
+                for entity in message.entities:
+                    if entity.type == "mention":
+                        mention_text = text[entity.offset:entity.offset + entity.length].lower()
+                        if mention_text in allowed_mentions:
+                            is_mentioned = True
+                            break
+
+            is_reply_to_bot = (
+                message.reply_to_message
+                and message.reply_to_message.from_user
+                and message.reply_to_message.from_user.id == context.bot.id
+            )
+
+            if not (is_mentioned or is_reply_to_bot):
+                return
+
+            # Remove the mention before sending the prompt to the agent.
+            for mention in sorted(allowed_mentions, key=len, reverse=True):
+                text = re.sub(rf"{re.escape(mention)}\b", "", text, flags=re.IGNORECASE).strip()
+            if not text:
+                text = "help"
 
         session = self.user_sessions.get(chat_id, {})
         
@@ -1556,5 +1590,3 @@ class TelegramBot:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     TelegramBot().run()
-
-    
