@@ -2,6 +2,11 @@
 
 This document serves as the authoritative source of truth for the project's current feature set, tool integrations, and architectural components.
 
+Related operator docs:
+- `docs/OPERATOR_FEATURES.md`
+- `docs/USER_CAPABILITIES.md`
+- `docs/OPERATOR_CHECKLIST.md`
+
 ## 🤖 Core AI Agent
 - **Cognitive Architecture**: Modular "Agent Loop" supporting multiple LLM providers (Anthropic, OpenAI, Gemini, Ollama).
 - **Persistent Memory**: Session-based history stored in `~/.agent/sessions/` with the ability to resume conversations.

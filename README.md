@@ -16,6 +16,13 @@ This system is designed to guard capital and empower community lore-keepers thro
 - 📱 **Telegram Integration** - Full-featured bot menu for portfolio management and trade execution.
 - 📊 **Advanced WebUI** - Real-time wisdom feed and forecast accuracy charts.
 
+## 📚 Operator Docs
+
+- [Operator Feature Sheet](./docs/OPERATOR_FEATURES.md)
+- [User Capabilities](./docs/USER_CAPABILITIES.md)
+- [Operator Checklist](./docs/OPERATOR_CHECKLIST.md)
+- [Features Manifest](./FEATURES.md)
+
 ## Prerequisites
 
 - Python 3.9 or higher
@@ -28,7 +35,7 @@ This system is designed to guard capital and empower community lore-keepers thro
 ### 1. Install Python Dependencies
 
 ```bash
-cd trading-bot
+cd trading-agent
 pip install -r requirements.txt
 ```
 
