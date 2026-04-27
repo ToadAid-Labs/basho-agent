@@ -314,7 +314,7 @@ class TelegramBot:
             "You can talk to me directly to ask about prices, trends, or to execute trades, "
             "or use the menu below for quick actions."
         )
-        await update.message.reply_text(welcome_text, reply_markup=self._get_main_menu(), parse_mode="Markdown")
+        await update.message.reply_text(welcome_text, reply_markup=self._get_main_menu(), parse_mode="MarkdownV2", disable_web_page_preview=True)
 
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages (pass to AI Agent)."""
@@ -428,10 +428,10 @@ class TelegramBot:
         
         result_holder = [""]
         error_holder = [""]
+        agent = self._get_agent(chat_id)
 
         def run_agent():
             try:
-                agent = self._get_agent(chat_id)
                 result_holder[0] = agent.chat(text)
             except Exception as e:
                 error_holder[0] = str(e)
@@ -472,8 +472,7 @@ class TelegramBot:
 
         if message_key in self._handled_chart_messages:
             return
-        response = self._user_safe_agent_response(result_holder[0] or "(no response)")
-        response = self._clean_response(response)
+        response = self._prepare_telegram_response(result_holder[0] or "(no response)")
         if status_message is not None:
             try:
                 await status_message.delete()
@@ -481,8 +480,8 @@ class TelegramBot:
                 pass
 
         # Split and send response
-        for i in range(0, len(response), 4090):
-            await update.message.reply_text(response[i:i+4090], disable_web_page_preview=True)
+        for chunk in self._telegram_chunks(response):
+            await update.message.reply_text(chunk, parse_mode="MarkdownV2", disable_web_page_preview=True)
             
         _save_user_session(chat_id, agent.sid, agent.messages)
 
@@ -536,7 +535,7 @@ class TelegramBot:
                 await query.edit_message_text("⌛ Fetching wallet status...")
                 from tools.trust_wallet import get_wallet_status
                 res = await self._run_blocking(get_wallet_status, timeout=45)
-                await self._show_result(query, "👛 Wallet Status", res, "menu:wallet")
+                await self._show_result(query, "👛 Wallet Status", {"Status": res}, "menu:wallet")
             elif action == "wallet_addresses":
                 await self._handle_wallet_addresses(query, refresh=False)
             elif action == "wallet_refresh":
@@ -545,7 +544,7 @@ class TelegramBot:
                 await query.edit_message_text("⌛ Fetching portfolio...")
                 from tools.trust_wallet import get_wallet_balance
                 res = await self._run_blocking(get_wallet_balance, timeout=60)
-                await self._show_result(query, "👛 On-chain Portfolio", res, "menu:wallet")
+                await self._show_result(query, "👛 On-chain Portfolio", {"Portfolio": res}, "menu:wallet")
             elif action == "wallet_gas":
                 await query.edit_message_text("⌛ Fetching native gas balances...")
                 from tools.trust_wallet import get_wallet_balance
@@ -553,7 +552,7 @@ class TelegramBot:
                 for chain in ("ethereum", "base", "solana"):
                     res = await self._run_blocking(lambda c=chain: get_wallet_balance(c), timeout=30)
                     parts.append(f"{chain}:\n{res}")
-                await self._show_result(query, "⛽ Native Gas Balances", "\n\n".join(parts), "menu:wallet")
+                await self._show_result(query, "⛽ Native Gas Balances", {"Balances": "\n\n".join(parts)}, "menu:wallet")
             elif action == "create_account":
                 res = await self._call_api("/api/paper-trading/initialize", "POST", json_data={"telegram_id": chat_id})
                 msg = "✅ Account created!" if res.get("success") else f"❌ Error: {res.get('error')}"
@@ -632,7 +631,7 @@ class TelegramBot:
                 from tools.trend_prediction_tools import forge_evaluate_due_predictions, forge_prediction_ledger_summary
                 await self._run_blocking(lambda: forge_evaluate_due_predictions(), timeout=60)
                 res = await self._run_blocking(lambda: forge_prediction_ledger_summary(), timeout=30)
-                await self._show_result(query, "🔮 Forge Ledger", res, "menu:forge")
+                await self._show_result(query, "🔮 Forge Ledger", {"Ledger": res}, "menu:forge")
             elif action == "forge_add_watch":
                 self.user_sessions[chat_id] = {"mode": "wait_forge_watch"}
                 await query.edit_message_text(
@@ -644,16 +643,16 @@ class TelegramBot:
             elif action == "forge_list_watches":
                 from tools.trend_prediction_tools import forge_list_watches
                 res = await self._run_blocking(lambda: forge_list_watches(active_only=False, user_id=None), timeout=30)
-                await self._show_result(query, "👁 Forge Watches", res, "menu:forge")
+                await self._show_result(query, "👁 Forge Watches", {"Watches": res}, "menu:forge")
             elif action == "forge_alerts":
                 from tools.trend_prediction_tools import forge_list_alerts
                 res = await self._run_blocking(lambda: forge_list_alerts(limit=20), timeout=30)
-                await self._show_result(query, "🚨 Forge Alerts", res, "menu:forge")
+                await self._show_result(query, "🚨 Forge Alerts", {"Alerts": res}, "menu:forge")
             elif action == "forge_run_watchlist":
                 await query.edit_message_text("⌛ Running Forge watchlist...")
                 from tools.trend_prediction_tools import forge_run_watchlist
                 res = await self._run_blocking(lambda: forge_run_watchlist(force=True), timeout=120)
-                await self._show_result(query, "👁 Forge Watchlist Run", res, "menu:forge")
+                await self._show_result(query, "👁 Forge Watchlist Run", {"Result": res}, "menu:forge")
             elif action == "forge_backtest":
                 self.user_sessions[chat_id] = {"mode": "wait_forge_backtest"}
                 await query.edit_message_text("🧪 Enter backtest:\nETH 24h composite\nSOL 4h momentum")
@@ -801,10 +800,9 @@ class TelegramBot:
             )
             return
         
-        response = self._user_safe_agent_response(result_holder[0] or "⚠️ AI Agent timed out or returned no response.")
-        response = self._clean_response(response)
-        for i in range(0, len(response), 4090):
-            await message.reply_text(response[i:i+4090], disable_web_page_preview=True)
+        response = self._prepare_telegram_response(result_holder[0] or "⚠️ AI Agent timed out or returned no response.")
+        for chunk in self._telegram_chunks(response):
+            await message.reply_text(chunk, parse_mode="MarkdownV2", disable_web_page_preview=True)
 
     async def _handle_image_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle Telegram photo/document image uploads through a narrow vision path."""
@@ -836,9 +834,9 @@ class TelegramBot:
             await message.reply_text("I could not analyze that image with the current vision provider.")
             return
 
-        response = self._clean_response(self._user_safe_agent_response(summary or "I could not find anything useful in that image."))
-        for i in range(0, len(response), 4090):
-            await message.reply_text(response[i:i+4090], disable_web_page_preview=True)
+        response = self._prepare_telegram_response(summary or "I could not find anything useful in that image.")
+        for chunk in self._telegram_chunks(response):
+            await message.reply_text(chunk, parse_mode="MarkdownV2", disable_web_page_preview=True)
 
     async def _handle_unsupported_media(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("I can analyze image uploads only. Please send a JPG, PNG, or WebP image.")
@@ -969,7 +967,6 @@ class TelegramBot:
         except Exception as e:  # noqa: BLE001
             return f"Error: {type(e).__name__}: {e}"
 
-
     def _clean_response(self, text: str) -> str:
         """Remove LLM formatting artifacts before sending to Telegram."""
         if not isinstance(text, str):
@@ -995,8 +992,88 @@ class TelegramBot:
         # 4. Remove excessive leading/trailing whitespace
         return text.strip()
 
+    def _format_for_telegram(self, text: str) -> str:
+        """Shape cleaned agent text into mobile-friendly Telegram output."""
+        if not isinstance(text, str):
+            text = str(text)
+
+        # Preserve fenced code blocks while cleaning prose around them.
+        code_blocks: list[str] = []
+
+        def stash_code_block(match: re.Match) -> str:
+            code_blocks.append(match.group(0).strip())
+            return f"\n\n__TOADAID_CODE_BLOCK_{len(code_blocks) - 1}__\n\n"
+
+        text = re.sub(r"```[\s\S]*?```", stash_code_block, text)
+
+        # Remove markdown headings and excessive emphasis that tends to render noisily on mobile.
+        text = re.sub(r"^\s*#{1,6}\s*", "", text, flags=re.MULTILINE)
+        text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
+        text = re.sub(r"__(.*?)__", r"\1", text)
+
+        # Normalize bullet styles without touching code blocks.
+        text = re.sub(r"^\s*[-*•]\s+", "• ", text, flags=re.MULTILINE)
+
+        # Normalize whitespace.
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = re.sub(r"[ \t]+\n", "\n", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+
+        paragraphs = [part.strip() for part in text.split("\n\n") if part.strip()]
+        shaped: list[str] = []
+        for paragraph in paragraphs:
+            if re.fullmatch(r"__TOADAID_CODE_BLOCK_\d+__", paragraph):
+                shaped.append(paragraph)
+                continue
+
+            lines = paragraph.split("\n")
+            if all(line.lstrip().startswith("• ") for line in lines if line.strip()):
+                shaped.append("\n".join(line.strip() for line in lines if line.strip()))
+                continue
+
+            # Break long prose paragraphs on sentence boundaries for mobile readability.
+            if len(paragraph) <= 420:
+                shaped.append(paragraph)
+                continue
+
+            sentence_parts = re.split(r"(?<=[.!?。！？])\s+", paragraph)
+            current = ""
+            for sentence in sentence_parts:
+                sentence = sentence.strip()
+                if not sentence:
+                    continue
+                if current and len(current) + len(sentence) + 1 > 320:
+                    shaped.append(current.strip())
+                    current = sentence
+                else:
+                    current = f"{current} {sentence}".strip()
+            if current:
+                shaped.append(current.strip())
+
+        text = "\n\n".join(shaped)
+
+        for idx, block in enumerate(code_blocks):
+            text = text.replace(f"__TOADAID_CODE_BLOCK_{idx}__", block)
+
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    def _escape_markdownv2(self, text: str) -> str:
+        """Escape special characters for Telegram MarkdownV2."""
+        SPECIAL_CHARS = r"\_*[]()~`>#+-=|{}.!"
+        for char in SPECIAL_CHARS:
+            text = text.replace(char, f"\\{char}")
+        return text
+
+    def _prepare_telegram_response(self, text: str) -> str:
+        """Apply safety, cleanup, and Telegram-specific formatting in one place."""
+        text = self._user_safe_agent_response(text)
+        text = self._clean_response(text)
+        text = self._format_for_telegram(text)
+        return self._escape_markdownv2(text)
+
     def _user_safe_agent_response(self, text: str) -> str:
-        """Block raw tool dumps from reaching Telegram."""
+        """Block raw tool dumps and artifacts."""
         if not isinstance(text, str):
             text = str(text)
 
@@ -1006,23 +1083,52 @@ class TelegramBot:
             "[stderr]",
             "[exit code:",
             "Error executing tool '",
+            "assistantReplies[",
         )
         if any(marker in text for marker in raw_tool_markers):
-            logger.warning("Blocked raw tool output from Telegram response")
-            return "I could not complete that request safely. Please try a narrower request."
+            logger.warning("Blocked artifact from Telegram response")
+            return "I could not complete that request safely."
 
         return text
 
-    async def _show_result(self, query, title: str, result: str, back_callback: str) -> None:
+    def _telegram_chunks(self, text: str, max_len: int = 4090) -> list[str]:
+        chunks = []
+        while text:
+            if len(text) <= max_len:
+                chunks.append(text)
+                break
+            
+            # Try to break at newline
+            break_point = text.rfind("\n", 0, max_len)
+            if break_point == -1:
+                break_point = max_len - 100  # Fallback
+            
+            chunks.append(text[:break_point])
+            text = text[break_point:].lstrip()
+        
+        return chunks
+
+    def _format_message(self, title: str, data: dict) -> str:
+        """Format a message with a title and a dictionary of data."""
+        message = f"**{title}**\n\n"
+        for key, value in data.items():
+            if isinstance(value, float):
+                value = f"{value:,.2f}"
+            elif isinstance(value, int):
+                value = f"{value:,}"
+            message += f"**{key}:**\t\t`{value}`\n"
+        return message
+
+    async def _show_result(self, query, title: str, result: dict, back_callback: str) -> None:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=back_callback)]])
-        text = f"{title}\n\n{result}"
+        text = self._format_message(title, result)
         if len(text) <= 4090:
-            await query.edit_message_text(text, reply_markup=kb, disable_web_page_preview=True)
+            await query.edit_message_text(text, reply_markup=kb, parse_mode="MarkdownV2", disable_web_page_preview=True)
             return
 
-        await query.edit_message_text(text[:3900] + "\n\n[truncated]", reply_markup=kb, disable_web_page_preview=True)
+        await query.edit_message_text(text[:3900] + "\n\n[truncated]", reply_markup=kb, parse_mode="MarkdownV2", disable_web_page_preview=True)
         for i in range(3900, len(text), 4090):
-            await query.message.reply_text(text[i:i+4090], disable_web_page_preview=True)
+            await query.message.reply_text(text[i:i+4090], parse_mode="MarkdownV2", disable_web_page_preview=True)
 
     async def _handle_wallet_addresses(self, query, refresh: bool) -> None:
         cache_key = "wallet_addresses"
@@ -1039,7 +1145,7 @@ class TelegramBot:
             await query.edit_message_text("📍 Wallet Addresses", reply_markup=self._main_back_menu())
             await self._send_wallet_address_qrs(query, res)
             return
-        await self._show_result(query, "📍 Wallet Addresses", res, "menu:wallet")
+        await self._show_result(query, "📍 Wallet Addresses", {"Addresses": res}, "menu:wallet")
 
     async def _send_wallet_address_qrs(self, query, wallet_output: str) -> None:
         cards = _parse_wallet_address_cards(wallet_output)
@@ -1062,10 +1168,10 @@ class TelegramBot:
         await query.message.reply_text("Use the Wallet menu to refresh cached addresses.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="menu:wallet")]]))
 
     async def _show_trust_price(self, query, symbol: str, chain: str) -> None:
-        await query.edit_message_text(f"⌛ Fetching {symbol} price on {chain}...")
-        from tools.trust import trust_get_token_price
-        res = await self._run_blocking(lambda: trust_get_token_price(token_symbol=symbol, chain=chain), timeout=30)
-        await self._show_result(query, f"💹 {symbol} Price", res, "menu:market")
+            await query.edit_message_text(f"⌛ Fetching {symbol} price on {chain}...")
+            from tools.trust import trust_get_token_price
+            res = await self._run_blocking(lambda: trust_get_token_price(token_symbol=symbol, chain=chain), timeout=30)
+            await self._show_result(query, f"💹 {symbol} Price", {"Price": res}, "menu:market")
 
     async def _show_dashboard(self, query):
         chat_id = query.from_user.id
@@ -1105,7 +1211,7 @@ class TelegramBot:
         )
         
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="menu:main")]])
-        await query.edit_message_text(dash, reply_markup=kb, parse_mode="Markdown")
+        await query.edit_message_text(dash, reply_markup=kb, parse_mode="MarkdownV2", disable_web_page_preview=True)
 
     async def _show_portfolio(self, query):
         chat_id = query.from_user.id
@@ -1131,7 +1237,7 @@ class TelegramBot:
             text.append(f"• **{p['symbol']}**: {p['quantity']:.4f} @ ${p['entry_price']:.2f} (P&L: ${p['unrealized_pnl']:+,.2f})")
             
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="menu:main")]])
-        await query.edit_message_text("\n".join(text), reply_markup=kb, parse_mode="Markdown")
+        await query.edit_message_text("\n".join(text), reply_markup=kb, parse_mode="MarkdownV2", disable_web_page_preview=True)
 
     def _main_back_menu(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="menu:main")]])
@@ -1256,15 +1362,15 @@ class TelegramBot:
         await query.edit_message_text("⚙️ Settings\n\nRuntime defaults, cache controls, and safety mode.", reply_markup=InlineKeyboardMarkup(kb))
 
     async def _show_settings_summary(self, query):
-        summary = (
-            f"Provider: {self.provider.value}\n"
-            f"Backend: {self.backend_url}\n"
-            f"Default chain: ethereum\n"
-            f"Telegram agent timeout: {AGENT_TIMEOUT}s\n"
-            f"API timeout: {API_TIMEOUT}s\n"
-            f"Live trading: confirmation required\n"
-            f"Wallet cache entries: {len(self.wallet_cache)}"
-        )
+        summary = {
+            "Provider": self.provider.value,
+            "Backend": self.backend_url,
+            "Default chain": "ethereum",
+            "Telegram agent timeout": f"{AGENT_TIMEOUT}s",
+            "API timeout": f"{API_TIMEOUT}s",
+            "Live trading": "confirmation required",
+            "Wallet cache entries": len(self.wallet_cache)
+        }
         await self._show_result(query, "⚙️ Current Settings", summary, "menu:settings")
 
     async def _process_market_price(self, update: Update, text: str):
@@ -1509,8 +1615,9 @@ class TelegramBot:
         }
 
     async def _send_chunked(self, update: Update, text: str):
-        for i in range(0, len(text), 4090):
-            await update.message.reply_text(text[i:i+4090], disable_web_page_preview=True)
+        text = self._prepare_telegram_response(text)
+        for chunk in self._telegram_chunks(text):
+            await update.message.reply_text(chunk, parse_mode="MarkdownV2", disable_web_page_preview=True)
 
     async def _process_quick_trade(self, update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, text: str):
         chat_id = update.effective_chat.id
@@ -1543,15 +1650,14 @@ class TelegramBot:
             
             if res.get("success"):
                 order = res.get("order") if isinstance(res.get("order"), dict) else res
-                await update.message.reply_text(
-                    f"✅ **Trade Successful!**\n\n"
-                    f"Action: {action.upper()}\n"
-                    f"Symbol: {order.get('symbol', symbol)}\n"
-                    f"Quantity: {float(order.get('quantity', 0)):,.8f}\n"
-                    f"Price: ${float(order.get('entry_price', order.get('exit_price', 0))):,.2f}\n"
-                    f"Total: ${float(order.get('total', 0)):,.2f}",
-                    parse_mode="Markdown"
-                )
+                message = self._format_message("✅ Trade Successful!", {
+                    "Action": action.upper(),
+                    "Symbol": order.get('symbol', symbol),
+                    "Quantity": float(order.get('quantity', 0)),
+                    "Price": f"${float(order.get('entry_price', order.get('exit_price', 0))):,.2f}",
+                    "Total": f"${float(order.get('total', 0)):,.2f}"
+                })
+                await update.message.reply_text(message, parse_mode="MarkdownV2", disable_web_page_preview=True)
                 clear_session = True
             else:
                 await update.message.reply_text(f"❌ Trade failed: {res.get('error')}")
