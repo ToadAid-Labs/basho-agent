@@ -225,6 +225,7 @@ class Agent:
         start_request = time.time()
         self.messages.append({"role": "user", "content": user_input})
         tool_calls_executed = 0
+        cached_tool_results: dict[str, str] = {}
         retryable_failure_signatures: set[str] = set()
         executed_paper_trade_signatures: set[str] = set()
 
@@ -293,6 +294,30 @@ class Agent:
                         yield {"type": "final_response", "content": final_text}
                         return
 
+                    if call_signature in cached_tool_results:
+                        result = cached_tool_results[call_signature]
+                        yield {"type": "tool_start", "name": tool_name, "input": tool_input}
+                        yield {"type": "tool_end", "name": tool_name, "result": result}
+
+                        assistant_content.append(
+                            {
+                                "type": "tool_use",
+                                "id": tool_use_id,
+                                "name": tool_name,
+                                "input": tool_input,
+                                "thought_signature": thought_signature
+                            }
+                        )
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tool_use_id,
+                                "name": tool_name,
+                                "content": result,
+                            }
+                        )
+                        continue
+
                     if self.max_tool_calls and tool_calls_executed >= self.max_tool_calls:
                         final_text = _tool_budget_message()
                         yield {"type": "final_response", "content": final_text}
@@ -304,6 +329,7 @@ class Agent:
                     tool_calls_executed += 1
                     tool_start = time.time()
                     result = execute_tool(tool_name, tool_input)
+                    cached_tool_results[call_signature] = result
                     logger.info(f"Tool {tool_name} took {time.time() - tool_start:.3f}s")
                     
                     yield {"type": "tool_end", "name": tool_name, "result": result}
@@ -360,6 +386,7 @@ class Agent:
         start_request = time.time()
         self.messages.append({"role": "user", "content": user_input})
         tool_calls_executed = 0
+        cached_tool_results: dict[str, str] = {}
         retryable_failure_signatures: set[str] = set()
         executed_paper_trade_signatures: set[str] = set()
 
@@ -405,6 +432,27 @@ class Agent:
                     if call_signature in executed_paper_trade_signatures:
                         return _duplicate_paper_trade_message()
 
+                    if call_signature in cached_tool_results:
+                        result = cached_tool_results[call_signature]
+                        assistant_content.append(
+                            {
+                                "type": "tool_use",
+                                "id": tool_use_id,
+                                "name": tool_name,
+                                "input": tool_input,
+                                "thought_signature": thought_signature
+                            }
+                        )
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tool_use_id,
+                                "name": tool_name,
+                                "content": result,
+                            }
+                        )
+                        continue
+
                     if self.max_tool_calls and tool_calls_executed >= self.max_tool_calls:
                         return _tool_budget_message()
 
@@ -412,6 +460,7 @@ class Agent:
                     tool_calls_executed += 1
                     tool_start = time.time()
                     result = execute_tool(tool_name, tool_input)
+                    cached_tool_results[call_signature] = result
                     logger.info(f"Tool {tool_name} took {time.time() - tool_start:.3f}s")
 
                     assistant_content.append(

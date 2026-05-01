@@ -220,3 +220,60 @@ def test_agent_stops_duplicate_paper_trade_after_success_before_budget(monkeypat
         ),
         ("trust_search_token", {"query": "TOBY"}),
     ]
+
+
+def test_agent_reuses_duplicate_tool_results_without_spending_budget(monkeypatch):
+    class FakeClient:
+        model = "fake"
+        sequence = [
+            ("get_pro_indicators", {"symbol": "BTC"}),
+            ("get_pro_indicators", {"symbol": "BTC"}),
+            ("get_multi_timeframe_signal", {"symbol": "BTC"}),
+            ("get_multi_timeframe_signal", {"symbol": "BTC"}),
+            None,
+        ]
+
+        def __init__(self):
+            self.calls = 0
+
+        def create_message(self, **kwargs):
+            item = self.sequence[self.calls]
+            self.calls += 1
+            if item is None:
+                return SimpleNamespace(content=[SimpleNamespace(type="text", text="Analysis complete.")])
+            tool_name, tool_input = item
+            return SimpleNamespace(
+                content=[
+                    SimpleNamespace(
+                        type="tool_use",
+                        name=tool_name,
+                        input=tool_input,
+                        id=f"tool-{self.calls}",
+                    )
+                ]
+            )
+
+    fake_client = FakeClient()
+    executed = []
+
+    monkeypatch.setattr(agent_module, "create_client", lambda provider: fake_client)
+    monkeypatch.setattr(agent_module, "get_tool_definitions", lambda: [])
+    monkeypatch.setattr(agent_module, "latest_summary", lambda sid: None)
+    monkeypatch.setattr(agent_module, "save_session_for_provider", lambda *args, **kwargs: None)
+    monkeypatch.setenv("AGENT_MAX_TOOL_CALLS", "2")
+
+    def fake_execute_tool(name, raw_input):
+        executed.append((name, raw_input))
+        return f"result for {name} {raw_input['symbol']}"
+
+    monkeypatch.setattr(agent_module, "execute_tool", fake_execute_tool)
+
+    agent = Agent(provider=ModelProvider.ANTHROPIC, sid="test", history=[])
+
+    response = agent.chat("analyze BTC")
+
+    assert response == "Analysis complete."
+    assert executed == [
+        ("get_pro_indicators", {"symbol": "BTC"}),
+        ("get_multi_timeframe_signal", {"symbol": "BTC"}),
+    ]
