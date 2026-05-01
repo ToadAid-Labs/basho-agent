@@ -39,6 +39,7 @@ SYSTEM_PROMPT = """You are a sophisticated Crypto Trading AI Agent. You have acc
 - Identify institutional market structure, support/resistance, and fair value gaps (analyze_market_structure).
 - Perform multi-timeframe analysis to confirm trends across 1h, 4h, and 1d charts (get_multi_timeframe_signal).
 - Architect high-conviction swing trade setups with Fibonacci zones, RSI divergence detection, and ATR-based stops (get_swing_setup).
+- Combine trend, momentum, structure, and risk controls into a single trade-or-no-trade decision (trade_decision_engine).
 - Proactively scan the market and propose high-conviction trades via the Autonomous Trading Cycle (trigger_autonomous_cycle).
 - Verify plans and analyses with the Council of Models to ensure multi-brain consensus (verify_with_council).
 - Audit trading performance by strategy and win-rate (audit_strategy_performance).
@@ -53,7 +54,7 @@ Be concise, practical, and data-driven. Execute the steps needed, then explain t
 MAX_ITERATIONS = 50
 DEFAULT_MAX_PROVIDER_MESSAGES = 10
 DEFAULT_MAX_PROVIDER_CHARS = 60_000
-DEFAULT_TELEGRAM_MAX_TOOL_CALLS = 8
+DEFAULT_TELEGRAM_MAX_TOOL_CALLS = 12
 TELEGRAM_BLOCKED_TOOLS = {"bash", "read_file", "write_file"}
 
 ROLES = {
@@ -66,7 +67,7 @@ ROLES = {
             "check_smart_money_holdings", "analyze_chart_vision", "audit_token_contract",
             "set_smart_alert", "list_alerts", "delete_alert", "get_daily_alpha",
             "get_pro_indicators", "analyze_market_structure", "get_multi_timeframe_signal",
-            "get_swing_setup", "trigger_autonomous_cycle", "verify_with_council",
+            "get_swing_setup", "trade_decision_engine", "trigger_autonomous_cycle", "verify_with_council",
             "check_background_processes", "hunt_insider_wallets", "verify_alpha_wallet", "add_alpha_wallet"
         ]
     },
@@ -86,7 +87,7 @@ ROLES = {
             "check_risk_limits", "calculate_kelly_risk", "check_onchain_risk", "read_strategy", 
             "write_strategy", "write_wisdom_commandment", "run_walk_forward_backtest", 
             "halt_trading", "resume_trading", "audit_token_contract", "optimize_strategy_parameters",
-            "get_pro_indicators", "analyze_market_structure", "get_swing_setup", "verify_with_council",
+            "get_pro_indicators", "analyze_market_structure", "get_swing_setup", "trade_decision_engine", "verify_with_council",
             "audit_strategy_performance", "prune_wisdom_ledger", "check_background_processes"
         ]
     },
@@ -94,7 +95,7 @@ ROLES = {
         "description": "You are a specialized Crypto Trading Tutor. Your ONLY job is to explain complex trading concepts, technical indicators, and the AI's recent decisions in simple, educational terms. Your goal is to empower the user with knowledge, emphasizing clarity, stillness, and long-term sustainability.",
         "allowed_tools": [
             "read_strategy", "get_pro_indicators", "analyze_market_structure", 
-            "get_multi_timeframe_signal", "get_swing_setup", "audit_strategy_performance",
+            "get_multi_timeframe_signal", "get_swing_setup", "trade_decision_engine", "audit_strategy_performance",
             "get_prediction_accuracy", "audit_token_contract", "get_daily_alpha",
             "tutor_explain_activity", "check_background_processes"
         ]
@@ -183,7 +184,16 @@ class Agent:
             f"\nRuntime model: {model_name}."
             "\nIf asked what model or provider you are running on, answer using these runtime values."
         )
-        
+
+        if self.user_id is not None:
+            self.system_prompt += (
+                "\n\nTELEGRAM EXECUTION RULES:"
+                "\n- Telegram requests have a strict tool-call budget. Use the fewest tools that can answer the request."
+                "\n- Prefer composite tools over manual fan-out. For entry analysis, prefer `trade_decision_engine` instead of chaining `get_pro_indicators`, `get_multi_timeframe_signal`, `get_swing_setup`, and `analyze_market_structure` separately."
+                "\n- Do not call the same lookup tool repeatedly for the same symbol unless the user provides new constraints."
+                "\n- For broad opportunity searches, screen at most 2-3 symbols first, then deepen only on the strongest candidate."
+            )
+
         # Inject background process state
         try:
             from core.orchestrator import registry

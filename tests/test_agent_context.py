@@ -277,3 +277,18 @@ def test_agent_reuses_duplicate_tool_results_without_spending_budget(monkeypatch
         ("get_pro_indicators", {"symbol": "BTC"}),
         ("get_multi_timeframe_signal", {"symbol": "BTC"}),
     ]
+
+
+def test_telegram_agent_prompt_prefers_composite_analysis(monkeypatch):
+    class FakeClient:
+        model = "fake"
+
+    monkeypatch.setattr(agent_module, "create_client", lambda provider: FakeClient())
+    monkeypatch.setattr(agent_module, "get_tool_definitions", lambda: [])
+    monkeypatch.setattr(agent_module, "latest_summary", lambda sid: None)
+    monkeypatch.setattr(agent_module, "save_session_for_provider", lambda *args, **kwargs: None)
+
+    agent = Agent(provider=ModelProvider.ANTHROPIC, sid="test", user_id=123, history=[])
+
+    assert "Telegram requests have a strict tool-call budget" in agent.system_prompt
+    assert "trade_decision_engine" in agent.system_prompt
