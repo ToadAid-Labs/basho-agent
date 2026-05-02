@@ -2,6 +2,7 @@ import base64
 import os
 import json
 import logging
+import tempfile
 import warnings
 import uuid
 from collections.abc import Iterable, Mapping
@@ -91,11 +92,30 @@ class GeminiClient:
                 creds.refresh(Request())
             except RefreshError as exc:
                 raise ValueError(_gemini_reauth_message()) from exc
+            self._persist_legacy_oauth_credentials(creds)
         legacy_genai.configure(credentials=creds)
         self.client = legacy_genai.GenerativeModel(model_name=self.model_name)
         self.proto = proto
         self.creds = creds
         self.uses_legacy_oauth_sdk = True
+        self._token_mtime = self._current_token_mtime()
+
+    def _persist_legacy_oauth_credentials(self, creds) -> None:
+        """Write refreshed OAuth credentials back to disk so future runs reuse them."""
+        token_dir = os.path.dirname(self.token_path) or "."
+        os.makedirs(token_dir, exist_ok=True)
+        fd, temp_path = tempfile.mkstemp(prefix=".google-token-", suffix=".json", dir=token_dir)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(creds.to_json())
+            os.replace(temp_path, self.token_path)
+        except OSError:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+            logger.warning("Failed to persist refreshed Gemini OAuth credentials.", exc_info=True)
+            return
         self._token_mtime = self._current_token_mtime()
 
     def _current_token_mtime(self) -> float | None:
@@ -133,6 +153,7 @@ class GeminiClient:
                 creds.refresh(Request())
             except RefreshError as exc:
                 raise ValueError(_gemini_reauth_message()) from exc
+            self._persist_legacy_oauth_credentials(creds)
 
     def create_message(
         self,
