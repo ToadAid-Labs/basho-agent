@@ -1,4 +1,5 @@
 import base64
+import json
 import sys
 from pathlib import Path
 
@@ -290,3 +291,62 @@ def test_gemini_client_keeps_oauth_client_when_token_file_unchanged(monkeypatch)
     )
 
     assert client._reload_legacy_oauth_if_token_changed() is False
+
+
+def test_gemini_client_persists_refreshed_oauth_credentials(tmp_path):
+    token_path = tmp_path / "google-token.json"
+    token_path.write_text("{}")
+
+    client = GeminiClient.__new__(GeminiClient)
+    client.token_path = str(token_path)
+    client._token_mtime = None
+
+    class FakeCreds:
+        def to_json(self):
+            return json.dumps({"access_token": "new-access", "refresh_token": "new-refresh"})
+
+    client._persist_legacy_oauth_credentials(FakeCreds())
+
+    saved = json.loads(token_path.read_text())
+    assert saved["access_token"] == "new-access"
+    assert saved["refresh_token"] == "new-refresh"
+    assert client._token_mtime == token_path.stat().st_mtime
+
+
+def test_gemini_client_refreshes_and_persists_oauth_credentials(monkeypatch):
+    client = GeminiClient.__new__(GeminiClient)
+    client.uses_legacy_oauth_sdk = True
+    client.api_key = None
+
+    class FakeCreds:
+        valid = False
+        expired = True
+
+        def refresh(self, request):
+            self.valid = True
+            self.expired = False
+
+    creds = FakeCreds()
+    persisted = []
+    client.creds = creds
+    client._persist_legacy_oauth_credentials = lambda refreshed_creds: persisted.append(refreshed_creds)
+
+    class FakeRefreshError(Exception):
+        pass
+
+    monkeypatch.setitem(
+        sys.modules,
+        "google.auth.exceptions",
+        type("GoogleAuthExceptions", (), {"RefreshError": FakeRefreshError}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "google.auth.transport.requests",
+        type("GoogleAuthRequests", (), {"Request": lambda: object()}),
+    )
+
+    client._ensure_legacy_oauth_fresh()
+
+    assert persisted == [creds]
+    assert creds.valid is True
+    assert creds.expired is False
