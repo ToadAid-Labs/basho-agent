@@ -724,6 +724,26 @@ def alert_processor_loop():
             logger.error(f"Error in alert processor loop: {e}")
             time.sleep(60)
 
+def strategy_optimizer_loop():
+    """Background thread to periodically optimize strategy parameters."""
+    logger.info("Starting strategy optimizer background loop...")
+    from tools.optimization_tools import optimize_strategy_parameters
+    
+    symbols = ["BTC", "ETH", "SOL"]
+    while True:
+        try:
+            # Run every 12 hours
+            time.sleep(43200)
+            logger.info("Running strategy parameter optimization...")
+            for symbol in symbols:
+                result = optimize_strategy_parameters(symbol=symbol, days=30)
+                logger.info(f"Optimization complete for {symbol}: {result.split('--------------------------------------------------')[1].strip()}")
+                
+                # In a real system, we'd automatically update the strategy config here.
+                # For now, we log the recommendation for the agent to see in logs or next session.
+        except Exception as e:
+            logger.error(f"Error in strategy optimizer loop: {e}")
+
 def initialize_app():
     """Initialize the application."""
     init_db()
@@ -740,6 +760,9 @@ def initialize_app():
 
     forge_thread = threading.Thread(target=trend_forge_tracker_loop, daemon=True)
     forge_thread.start()
+    
+    optimizer_thread = threading.Thread(target=strategy_optimizer_loop, daemon=True)
+    optimizer_thread.start()
     
     # from core.orchestrator import autonomous_orchestrator_loop
     # orchestrator_thread = threading.Thread(target=autonomous_orchestrator_loop, daemon=True)

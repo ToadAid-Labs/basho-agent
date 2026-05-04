@@ -5,7 +5,7 @@ import threading
 import os
 import sys
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 
 from core.agent import Agent
@@ -102,88 +102,107 @@ def _extract_json(text: str) -> Dict[str, Any]:
 
 def run_autonomous_cycle(target_chat_id: int):
     """
-    Main autonomous trading cycle.
-    1. Aggregates alpha news.
-    2. Scans for pro technical signals.
-    3. Generates swing setups.
-    4. Council Vote: Risk Manager + Alpha Validator.
-    5. Proposes to user ONLY if consensus is reached.
+    Main autonomous trading cycle (v2.0 Predator Mode).
+    1. Global Macro Check: Risk-On/Risk-Off regime.
+    2. Aggregates alpha news.
+    3. Scans for pro technical signals.
+    4. Neural Cross-Check: Analyze winning patterns and conviction.
+    5. Council Vote: Risk Mgr + Alpha Validator (OBI & Wall Analysis).
+    6. Proposes to user ONLY if consensus is reached.
     """
     process_id = f"cycle_{int(time.time())}"
-    registry.register(process_id, {"type": "Autonomous Cycle", "chat_id": target_chat_id})
+    registry.register(process_id, {"type": "Autonomous Cycle (Predator Mode)", "chat_id": target_chat_id})
     
-    logger.info("Starting Autonomous Trading Cycle (Council Mode)...")
+    logger.info("Starting Autonomous Trading Cycle (Predator Mode)...")
     
     try:
         researcher = Agent(role="researcher", sid="auto_cycle_research")
         risk_manager = Agent(role="risk_manager", sid="auto_cycle_risk")
         validator = Agent(role="validator", sid="auto_cycle_validator")
         
-        # 1. Get Alpha
-        alpha_report = researcher.chat("Generate a concise daily alpha report for the top 3 crypto assets. Do not use tools if you already have the news.")
+        # 1. Macro Context Check
+        macro_raw = researcher.chat("Check global macro context. Are we in a Risk-On or Risk-Off environment?")
+        macro = _extract_json(macro_raw)
+        global_regime = macro.get("global_regime", "UNKNOWN")
+        
+        # 2. Get Alpha
+        alpha_report = researcher.chat("Generate a concise daily alpha report for the top 3 crypto assets. Use news_tools if needed.")
         logger.info("Alpha report generated.")
 
-        # 2. Scan Symbols
+        # 3. Scan Symbols
         symbols = ["BTC", "ETH", "SOL"] 
         proposals_count = 0
         
         for symbol in symbols:
             try:
                 logger.info(f"Analyzing {symbol}...")
+                
                 indicators_raw = researcher.chat(f"Get pro indicators for {symbol}. Return ONLY the JSON output.")
                 indicators = _extract_json(indicators_raw)
                 
                 if indicators.get("trend") == "UP" or "STRONG" in indicators.get("trend_strength", ""):
-                    # 3. Get Swing Setup
+                    # 4. Neural Conviction Signal (Phase 11)
+                    conviction_raw = researcher.chat(
+                        f"Calculate conviction signal for {symbol} using historical trade learnings. "
+                        f"Current RSI: {indicators.get('momentum')}, Sentiment: {indicators.get('summary')}"
+                    )
+                    conviction = _extract_json(conviction_raw)
+                    
+                    if conviction.get("conviction_score", 0) < 0.6:
+                        logger.info(f"Skipping {symbol}: Low neural conviction ({conviction.get('conviction_score')})")
+                        continue
+
+                    # 5. Get Swing Setup
                     setup_raw = researcher.chat(f"Generate a swing trade setup for {symbol}. Return ONLY the JSON output.")
                     setup = _extract_json(setup_raw)
                     
                     if "HIGH" in setup.get("setup_quality", "") or "PREMIUM" in setup.get("setup_quality", ""):
-                        # 4. Phase A: Risk Manager Verification
+                        # 6. Phase A: Risk Manager Verification
                         risk_prompt = (
                             f"I found a high-quality swing setup for {symbol}.\n"
+                            f"Global Regime: {global_regime}\n"
+                            f"Neural Conviction: {conviction.get('conviction_score')}\n"
                             f"Setup: {setup_raw}\n"
-                            f"Recent Alpha: {alpha_report}\n"
                             "Verify this against our risk rules. Respond with JSON: {\"propose\": bool, \"reason\": \"str\"}"
                         )
                         risk_res = _extract_json(risk_manager.chat(risk_prompt))
 
                         if risk_res.get("propose"):
-                            # 4. Phase B: Alpha Validator (Devil's Advocate)
+                            # 6. Phase B: Alpha Validator (Predator Mode - Order Book Check)
                             val_prompt = (
-                                f"The Researcher and Risk Manager have APPROVED a trade for {symbol}.\n"
-                                f"Setup: {setup_raw}\n"
-                                "Your job is to be the DEVIL'S ADVOCATE. Why is this trade a BAD idea? "
-                                "Check volume, orderbook, and recent news. Respond with JSON: {\"approve\": bool, \"critique\": \"str\"}"
+                                f"Researcher and Risk Manager APPROVED {symbol}.\n"
+                                f"Analyze order book depth and imbalance for {symbol}. "
+                                "Are there massive buy walls supporting this entry? Is the OBI bullish? "
+                                "Respond with JSON: {\"approve\": bool, \"critique\": \"str\", \"obi_score\": float}"
                             )
                             val_res = _extract_json(validator.chat(val_prompt))
 
                             if val_res.get("approve"):
-                                # 5. Consensus Reached - Store and Notify
+                                # 7. Consensus Reached - Store and Notify
                                 store = ProposalStore()
                                 proposal_id = store.add_proposal({
                                     "symbol": symbol,
                                     "setup": setup,
-                                    "reason": f"Council Consensus: {risk_res.get('reason')} | Validator: {val_res.get('critique')}",
+                                    "reason": f"Predator Consensus: OBI {val_res.get('obi_score')} | Neural: {conviction.get('conviction_score')}",
                                     "type": "SWING"
                                 })
                                 
                                 msg = (
-                                    f"🏛️ **COUNCIL APPROVED PROPOSAL**\n\n"
-                                    f"Asset: #{symbol} | Quality: {setup.get('setup_quality')}\n\n"
+                                    f"🐺 **PREDATOR CONSENSUS APPROVED**\n\n"
+                                    f"Asset: #{symbol} | Conviction: {conviction.get('conviction_score')*100:.0f}%\n"
+                                    f"Macro: {global_regime} | OBI: {val_res.get('obi_score', 'N/A')}\n\n"
                                     f"**Risk Mgr**: ✅ {risk_res.get('reason')}\n"
                                     f"**Validator**: ✅ {val_res.get('critique')}\n\n"
                                     f"**Plan:**\n"
                                     f"- Entry: {setup.get('trade_plan', {}).get('entry_range')}\n"
                                     f"- Stop: {setup.get('trade_plan', {}).get('stop_loss')}\n"
-                                    f"- Target: {setup.get('trade_plan', {}).get('take_profit')}\n"
-                                    f"- RR Ratio: {setup.get('trade_plan', {}).get('risk_reward_ratio')}\n\n"
-                                    f"Council vote is UNANIMOUS. Reply below to execute."
+                                    f"- Target: {setup.get('trade_plan', {}).get('take_profit')}\n\n"
+                                    f"Neural cross-check PASSED. Unanimous Predator Consensus."
                                 )
                                 
                                 buttons = {"inline_keyboard": [[
-                                    {"text": "✅ EXECUTE", "callback_data": f"proposal:execute:{proposal_id}"},
-                                    {"text": "❌ REJECT", "callback_data": f"proposal:reject:{proposal_id}"}
+                                    {"text": "🚀 EXECUTE", "callback_data": f"proposal:execute:{proposal_id}"},
+                                    {"text": "❌ ABORT", "callback_data": f"proposal:reject:{proposal_id}"}
                                 ]]}
                                 
                                 send_telegram_message(target_chat_id, msg, reply_markup=buttons)
@@ -194,9 +213,9 @@ def run_autonomous_cycle(target_chat_id: int):
             except Exception as e:
                 logger.error(f"Error in cycle for {symbol}: {e}")
 
-        registry.update(process_id, "completed", f"Found {proposals_count} council-approved opportunities.")
+        registry.update(process_id, "completed", f"Found {proposals_count} predator-approved opportunities.")
         if proposals_count == 0:
-            send_telegram_message(target_chat_id, "🔍 **Council Cycle Complete**\n\nNo trade setups reached a 100% consensus today. The Validator rejected weaker setups to protect your capital. Next scan in 4 hours.")
+            send_telegram_message(target_chat_id, "🔍 **Predator Scan Complete**\n\nNo trade setups reached a high-conviction consensus. The Neural Synthesizer and OBI Validator filtered out low-probability noise. Next scan in 4 hours.")
 
     except Exception as e:
         logger.error(f"Failed autonomous cycle: {e}")

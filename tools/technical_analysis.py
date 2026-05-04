@@ -138,6 +138,78 @@ def analyze_market_structure(symbol: str, lookback: int = 300) -> str:
         "required": ["symbol"],
     },
 )
+@register_tool(
+    name="detect_market_regime",
+    description="Classify the current market regime for a symbol as TRENDING, RANGING, VOLATILE, or UNKNOWN. Analyzes recent price action, ADX strength, and ATR volatility to help the agent decide which strategy (Trend-Following vs. Mean-Reversion) to use.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "symbol": {"type": "string", "description": "Asset symbol (e.g., BTC, ETH)."},
+            "lookback": {"type": "integer", "description": "Number of candles to analyze (default 100).", "default": 100}
+        },
+        "required": ["symbol"],
+    },
+)
+def detect_market_regime(symbol: str, lookback: int = 100) -> str:
+    """Detect market regime: Trending, Ranging, or Volatile."""
+    try:
+        from monitoring.market_analyzer import MarketAnalyzer
+        tracker = PortfolioTracker()
+        df = tracker._fetch_real_ohlcv(symbol, lookback)
+        if df.empty:
+            return f"Error: Could not fetch data for {symbol}."
+            
+        df = _prepare_df(df)
+        
+        # 1. Volatility check (ATR)
+        atr = ta.atr(df['high'], df['low'], df['close'], length=14)
+        curr_atr_pct = (atr.iloc[-1] / df['close'].iloc[-1]) * 100
+        
+        # 2. Trend Strength check (ADX)
+        adx_df = ta.adx(df['high'], df['low'], df['close'], length=14)
+        curr_adx = adx_df.iloc[-1].iloc[0] # ADX_14
+        
+        # 3. Market Structure (Range vs Breakout)
+        # Calculate Bollinger Band Width
+        bb = ta.bbands(df['close'], length=20, std=2)
+        bb_width = (bb['BBU_20_2.0'] - bb['BBL_20_2.0']) / bb['BBM_20_2.0']
+        curr_bbw = bb_width.iloc[-1]
+        
+        # Determine regime
+        regime = "UNKNOWN"
+        reason = "Insufficient data"
+        
+        if curr_atr_pct > 4.5: # Threshold for high volatility
+            regime = "VOLATILE"
+            reason = f"ATR is extremely high ({curr_atr_pct:.2f}%). Expect whipsaws."
+        elif curr_adx > 25:
+            regime = "TRENDING"
+            direction = "UP" if df['close'].iloc[-1] > df['close'].iloc[-10] else "DOWN"
+            reason = f"ADX is strong ({curr_adx:.2f}). Market is clearly trending {direction}."
+        elif curr_bbw < 0.05:
+            regime = "RANGING"
+            reason = f"Bollinger Band Width is narrow ({curr_bbw:.3f}). Market is consolidating in a tight range."
+        else:
+            regime = "RANGING (Neutral)"
+            reason = f"ADX is weak ({curr_adx:.2f}) and volatility is moderate. No clear trend detected."
+            
+        result = {
+            "symbol": symbol.upper(),
+            "regime": regime,
+            "metrics": {
+                "adx": round(curr_adx, 2),
+                "atr_pct": round(curr_atr_pct, 2),
+                "bb_width": round(curr_bbw, 3)
+            },
+            "reasoning": reason,
+            "recommended_strategy": "Momentum/Trend-Following" if regime == "TRENDING" else "Mean-Reversion/Grid" if regime == "RANGING" else "Wait/Risk-Off"
+        }
+        
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Regime detection error: {e}")
+        return f"Error detecting market regime: {e}"
+
 def get_multi_timeframe_signal(symbol: str) -> str:
     """Institutional trend confirmation across 1h, 4h, 1d, and 1w."""
     try:
