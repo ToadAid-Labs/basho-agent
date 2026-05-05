@@ -131,6 +131,11 @@ def save_openai_api_key(api_key: str) -> None:
     update_env("MODEL_PROVIDER", "openai")
     update_env("OPENAI_API_KEY", api_key)
 
+
+def save_openai_model(model: str) -> None:
+    """Persist the preferred standard OpenAI API model."""
+    update_env("OPENAI_MODEL", model)
+
 def _base64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
 
@@ -189,6 +194,11 @@ def save_openai_codex_credentials(tokens: dict) -> None:
     token_path.write_text(json.dumps(payload, indent=2))
     update_env("OPENAI_CODEX_TOKEN_PATH", str(token_path))
     update_env("MODEL_PROVIDER", "openai-codex")
+
+
+def save_openai_codex_model(model: str) -> None:
+    """Persist the preferred Codex CLI model."""
+    update_env("OPENAI_CODEX_MODEL", model)
 
 def _extract_oauth_code_and_state(value: str) -> tuple[str, str | None]:
     """Extract an OAuth code/state pair from a pasted callback URL or bare code."""

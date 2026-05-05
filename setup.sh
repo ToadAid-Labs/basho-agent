@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 # Telegram Trading Bot Setup Script
 # This script sets up the environment and dependencies
@@ -55,15 +56,10 @@ fi
 # Initialize Database
 echo ""
 echo "🗄️ Initializing database..."
-python3 scripts/init_db.py
+python scripts/init_db.py
 
 # Make scripts executable
 chmod +x setup.sh scripts/*.sh
-
-# Run tests
-echo ""
-echo "🧪 Running setup verification..."
-python3 tests/test_setup.py
 
 echo ""
 echo "🎉 Setup complete!"
@@ -73,6 +69,7 @@ echo "1. Edit .env and add your credentials:"
 echo "   - TWAK_ACCESS_ID (from Trust Wallet)"
 echo "   - TWAK_HMAC_SECRET (from Trust Wallet)"
 echo "   - TELEGRAM_BOT_TOKEN (from @BotFather)"
+echo "   - DASHBOARD_PASSWORD (for Web UI)"
 echo ""
 echo "2. Start the AI system (Bot + Backend):"
 echo "   - Run: ./run_bot.sh"
@@ -81,8 +78,11 @@ echo "3. (Optional) Start components separately:"
 echo "   - Telegram Bot: python3 agent.py bot"
 echo "   - Web Dashboard: python3 backend/app.py"
 echo ""
-echo "3. (Optional) Run background services (Linux):"
+echo "4. (Optional) Run background services (Linux):"
 echo "   - Run: ./scripts/install_service.sh"
 echo "   - Follow the instructions to install systemd services."
 echo ""
-echo "4. Access the dashboard at http://localhost:5000 📱"
+echo "5. (Optional) Run setup verification after configuring credentials:"
+echo "   - Run: python tests/test_setup.py"
+echo ""
+echo "6. Access the dashboard at http://localhost:5000 📱"

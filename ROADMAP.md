@@ -17,7 +17,7 @@ This roadmap outlines the strategic direction for transforming the bot from a st
 - **Backpropagation logic**: Use the prediction error to adjust model weights or trigger an emergency retraining session if accuracy drops below a threshold.
 - **Confidence Scoring**: Add a "Confidence Level" (0-100%) to every AI signal based on historical performance of similar patterns.
 
-### 1.2 Multi-Cycle Training
+### 1.2 Multi-Cycle Training ✅
 - **Data Augmentation**: Intentionally feed the model historical "Black Swan" events (flash crashes, parabolic runs) so it recognizes extreme volatility.
 - **Regime Detection**: Train the model to identify if the current market is "Ranging" or "Trending" and switch strategies accordingly.
 
@@ -157,7 +157,7 @@ This roadmap outlines the strategic direction for transforming the bot from a st
 ## 🧠 Phase 9: Multi-Agent Collaborative Intelligence
 *Objective: Enhance the inter-agent collaboration layer to enable proactive "Strategy Room" decision-making.*
 
-### 9.1 The "Hype Sniper" (Social Agent)
+### 9.1 The "Hype Sniper" (Social Agent) ✅
 - **Proactive Scraper**: Develop an agent role that continuously scrapes specialized subreddits and Telegram "Alpha Channels" for early ticker mentions.
 - **Sentiment/Volume Correlation**: Automatically flag symbols where social volume is spiking *before* price breakout, alerting the Researcher.
 
@@ -166,10 +166,43 @@ This roadmap outlines the strategic direction for transforming the bot from a st
 - **Consensus Voting**: Implemented "Council Consensus" logic requiring unanimous approval from Risk Manager and Validator before a proposal is sent.
 - **Agent Role**: Added the `validator` role with tools for deep analysis of orderbooks and on-chain risk.
 
-### 9.3 The "Macro Watcher"
+### 9.3 The "Macro Watcher" ✅
 - **Global Context**: Create an agent that tracks non-crypto data (DXY, BTC/SPX correlation, CPI release dates).
 - **Regime Shift**: The Macro Watcher can trigger a "Global Risk-Off" mode, automatically increasing the strictness of the Risk Manager during high-macro-volatility windows.
 
-### 9.4 The "Strategy Optimizer" (Parameter Tuner)
+### 9.4 The "Strategy Optimizer" (Parameter Tuner) ✅
 - **Live Tuning**: An agent that continuously runs small-scale walk-forward backtests on the last 7 days of data to suggest real-time adjustments to RSI/ATR/Bollinger thresholds based on the current market regime.
 
+---
+
+## ⚡ Phase 10: The "Predator Tier" (Institutional Dominance)
+*Objective: Utilize High-Frequency Trading (HFT) concepts and advanced data science to achieve a predatory market edge.*
+
+### 10.1 Order Book Imbalance (OBI) Scanner ✅
+- **Real-Time Walls**: Detect massive limit order clusters (buy/sell walls) to predict immediate micro-trend reversals.
+- **Order Flow Imbalance**: Calculate OBI ratios to identify where institutional "hidden" pressure is building.
+
+### 10.2 Statistical Arbitrage (Pair Trading) ✅
+- **Mean-Reversion Spreads**: Monitor the price spread between highly correlated assets (e.g., ETH/SOL).
+- **Z-Score Execution**: Trigger market-neutral trades when the spread hits a statistical extreme (Z-Score > 3).
+
+### 10.3 On-Chain Graph Intelligence ✅
+- **Wallet Clustering**: Identify coordinated moves between multiple Smart Money entities.
+- **Narrative Front-Running**: Scan for "cluster buys" on low-cap assets before they trend on social media.
+
+### 10.4 RL-Policy Agent (Reinforcement Learning) ✅
+- **Policy Optimization**: A background agent that uses Reinforcement Learning (PPO) to simulate millions of trades and discover non-obvious profit patterns.
+- **Dynamic Policy Swapping**: Automatically switch between learned policies based on the real-time market regime.
+
+---
+
+## 🧠 Phase 11: The "Neural Signal Synthesizer" (Deep Learning) ✅
+*Objective: Implement a self-correcting neural layer that learns from P&L results to filter low-conviction signals.*
+
+### 11.1 Trade Outcome Correlation ✅
+- **Feature Extraction**: Automatically tag every closed trade with the exact indicator values and sentiment scores at the time of entry.
+- **Pattern Synthesis**: A tool to identify "winning clusters" (e.g., "90% win rate when RSI < 30 AND Sentiment > 0.4 on 4h timeframe").
+
+### 11.2 Conviction Signaling Agent ✅
+- **Self-Corrected Signal**: A tool that overrides standard TA signals with a 'Conviction Score' derived from historical success patterns.
+- **Dynamic Filtering**: The bot automatically skips trades that fall into previously "failed clusters" identified by the learning agent.

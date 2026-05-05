@@ -236,7 +236,7 @@ class PricePredictionModel:
             return False
 
     def train(self, df: pd.DataFrame, target_column: str = 'close',
-              features: Optional[List[str]] = None) -> float:
+              features: Optional[List[str]] = None, augment: bool = True) -> float:
         """
         Train the prediction model
 
@@ -244,6 +244,7 @@ class PricePredictionModel:
             df: DataFrame with OHLCV data and features
             target_column: Target column to predict
             features: List of feature columns to use
+            augment: Whether to inject 'Black Swan' augmentation data
 
         Returns:
             Mean Absolute Error of training set
@@ -253,6 +254,10 @@ class PricePredictionModel:
                        if col != target_column and 'close' not in col]
 
         self.feature_columns = features
+
+        # 1. Augment with Black Swan events if requested
+        if augment:
+            df = self.augment_with_black_swan_events(df)
 
         # Prepare data
         df_train = df.copy()
@@ -289,6 +294,35 @@ class PricePredictionModel:
 
         self.is_trained = True
         return test_score
+
+    def augment_with_black_swan_events(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Inject synthetic extreme volatility events (Flash Crashes, Parabolic Runs)
+        into the dataset to ensure the model recognizes high-risk regimes.
+        """
+        logger.info("Augmenting training data with 'Black Swan' volatility events...")
+        augmented_rows = []
+        
+        # Select 5 random points to inject extreme volatility
+        indices = np.random.choice(df.index, size=min(5, len(df)//10), replace=False)
+        
+        for idx in indices:
+            row = df.loc[idx].copy()
+            # Flash Crash (-25% in one step)
+            crash_row = row.copy()
+            crash_row['close'] *= 0.75
+            crash_row['volatility_20'] *= 3.0
+            crash_row['atr'] *= 3.0
+            augmented_rows.append(crash_row)
+            
+            # Parabolic Run (+15% in one step)
+            run_row = row.copy()
+            run_row['close'] *= 1.15
+            run_row['rsi'] = 85.0
+            augmented_rows.append(run_row)
+            
+        new_df = pd.concat([df, pd.DataFrame(augmented_rows)], ignore_index=True)
+        return new_df.sort_index()
 
     def predict(self, df: pd.DataFrame, hours_ahead: int = 1) -> pd.Series:
         """

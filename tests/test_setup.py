@@ -175,7 +175,7 @@ def main():
         print("🎉 ALL TESTS PASSED! You're ready to run the bot.")
         print("=" * 60)
         print("\n📝 Next steps:")
-        print("1. Run: python agent_bot.py")
+        print("1. Run: python agent.py bot")
         print("2. Open Telegram and search for your bot")
         print("3. Try commands like: /price USDC, /search pepe")
     else:

@@ -35,13 +35,28 @@ from core.auth import (
     exchange_openai_codex_code,
     save_google_credentials,
     save_openai_api_key,
+    save_openai_model,
     save_openai_codex_credentials,
+    save_openai_codex_model,
 )
 from core.provider import get_provider
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+OPENAI_API_MODEL_OPTIONS = [
+    "gpt-5.4-mini",
+    "gpt-5.4",
+    "gpt-5.5",
+]
+
+OPENAI_CODEX_MODEL_OPTIONS = [
+    "gpt-5.4-mini",
+    "gpt-5.4",
+    "gpt-5.5",
+    "gpt-5.3-codex",
+]
 
 # Create Flask app
 app = Flask(__name__)
@@ -86,6 +101,18 @@ def get_web_agent():
         # Initialize an agent session specifically for the web UI
         web_agent = Agent(provider=provider, sid="web_dashboard_session")
     return web_agent
+
+
+def _render_openai_auth(error: str | None = None):
+    return render_template(
+        'provider_auth.html',
+        error=error,
+        active_provider=get_provider().value,
+        openai_model=os.getenv("OPENAI_MODEL", "gpt-5.4-mini"),
+        openai_codex_model=os.getenv("OPENAI_CODEX_MODEL", "gpt-5.4-mini"),
+        openai_api_model_options=OPENAI_API_MODEL_OPTIONS,
+        openai_codex_model_options=OPENAI_CODEX_MODEL_OPTIONS,
+    )
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -147,19 +174,46 @@ def openai_auth():
     if request.method == 'POST':
         api_key = request.form.get('api_key', '').strip()
         if not api_key:
-            return render_template('provider_auth.html', error='OpenAI API key is required.')
+            return _render_openai_auth(error='OpenAI API key is required.')
 
+        model = request.form.get('api_model', '').strip()
         save_openai_api_key(api_key)
+        if model:
+            save_openai_model(model)
         reset_web_agent()
         flash('OpenAI API key saved. OpenAI is now the active provider.', 'success')
         return redirect(url_for('index'))
 
-    return render_template('provider_auth.html')
+    return _render_openai_auth()
+
+
+@app.route('/auth/openai/models', methods=['POST'])
+@login_required
+def openai_model_settings():
+    """Persist OpenAI and Codex model preferences from the web UI."""
+    api_model = request.form.get('api_model', '').strip()
+    codex_model = request.form.get('codex_model', '').strip()
+    active_provider = request.form.get('active_provider', '').strip().lower()
+
+    if api_model:
+        save_openai_model(api_model)
+    if codex_model:
+        save_openai_codex_model(codex_model)
+    if active_provider in {'openai', 'openai-codex'}:
+        from core.auth import update_env
+        update_env("MODEL_PROVIDER", active_provider)
+
+    reset_web_agent()
+    flash('OpenAI model settings saved.', 'success')
+    return redirect(url_for('openai_auth'))
 
 @app.route('/auth/openai/oauth')
 @login_required
 def openai_oauth():
     """Start ChatGPT/Codex OAuth using the public Codex PKCE client."""
+    selected_model = request.args.get('model', '').strip()
+    if selected_model:
+        session['openai_oauth_model'] = selected_model
     redirect_uri = os.getenv('OPENAI_CODEX_REDIRECT_URI')
     authorization_url, state, verifier, redirect_uri = build_openai_codex_oauth_url(redirect_uri)
     session['openai_oauth_state'] = state
@@ -208,6 +262,10 @@ def complete_openai_oauth(code: str | None, state: str | None):
     try:
         tokens = exchange_openai_codex_code(code, verifier, redirect_uri)
         save_openai_codex_credentials(tokens)
+        codex_model = session.pop('openai_oauth_model', None)
+        if codex_model:
+            save_openai_codex_model(codex_model)
+        reset_web_agent()
         flash('OpenAI Codex OAuth complete. ChatGPT/Codex tokens were saved.', 'success')
     except Exception as exc:
         logger.exception("OpenAI OAuth callback failed")
@@ -724,6 +782,26 @@ def alert_processor_loop():
             logger.error(f"Error in alert processor loop: {e}")
             time.sleep(60)
 
+def strategy_optimizer_loop():
+    """Background thread to periodically optimize strategy parameters."""
+    logger.info("Starting strategy optimizer background loop...")
+    from tools.optimization_tools import optimize_strategy_parameters
+    
+    symbols = ["BTC", "ETH", "SOL"]
+    while True:
+        try:
+            # Run every 12 hours
+            time.sleep(43200)
+            logger.info("Running strategy parameter optimization...")
+            for symbol in symbols:
+                result = optimize_strategy_parameters(symbol=symbol, days=30)
+                logger.info(f"Optimization complete for {symbol}: {result.split('--------------------------------------------------')[1].strip()}")
+                
+                # In a real system, we'd automatically update the strategy config here.
+                # For now, we log the recommendation for the agent to see in logs or next session.
+        except Exception as e:
+            logger.error(f"Error in strategy optimizer loop: {e}")
+
 def initialize_app():
     """Initialize the application."""
     init_db()
@@ -740,6 +818,9 @@ def initialize_app():
 
     forge_thread = threading.Thread(target=trend_forge_tracker_loop, daemon=True)
     forge_thread.start()
+    
+    optimizer_thread = threading.Thread(target=strategy_optimizer_loop, daemon=True)
+    optimizer_thread.start()
     
     # from core.orchestrator import autonomous_orchestrator_loop
     # orchestrator_thread = threading.Thread(target=autonomous_orchestrator_loop, daemon=True)

@@ -130,6 +130,23 @@ class TestTelegramBot(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(update.message.reply_text.await_args_list[0].args[0], "⌛ Working on that...")
         self.assertIn("Gemini OAuth needs reauthentication", update.message.reply_text.await_args_list[1].args[0])
 
+    @patch("core.telegram_bot.Agent")
+    @patch("core.telegram_bot.os.path.exists")
+    @patch("core.telegram_bot.get_provider")
+    def test_gemini_reauth_falls_back_to_codex_when_available(self, mock_get_provider, mock_exists, mock_agent):
+        mock_get_provider.return_value = ModelProvider.GEMINI
+        mock_exists.return_value = True
+        mock_agent.side_effect = [
+            ValueError("Gemini OAuth needs reauthentication."),
+            MagicMock(provider=ModelProvider.OPENAI_CODEX),
+        ]
+
+        bot = TelegramBot(provider=None)
+        agent = bot._get_agent(self.chat_id)
+
+        self.assertEqual(agent.provider, ModelProvider.OPENAI_CODEX)
+        self.assertEqual(bot.provider, ModelProvider.OPENAI_CODEX)
+
     @patch("tools.vision_analysis.generate_price_chart_image")
     async def test_handle_chart_request_sends_photo(self, mock_chart):
         mock_chart.return_value = SimpleNamespace(symbol="BTC", image_bytes=b"png-bytes", error=None)
