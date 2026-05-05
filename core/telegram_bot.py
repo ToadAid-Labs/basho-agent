@@ -225,6 +225,7 @@ class TelegramBot:
             raise ValueError("TELEGRAM_BOT_TOKEN not set. Add it to your .env file.")
         
         self.token = token
+        self._provider_locked = provider is not None
         self.provider = provider or get_provider()
         self._agents: dict[int, Agent] = {}
         self.backend_url = backend_url
@@ -234,12 +235,51 @@ class TelegramBot:
 
     def _get_agent(self, chat_id: int) -> Agent:
         """Get or create an Agent for this Telegram user."""
+        if not self._provider_locked:
+            current_provider = get_provider()
+            if current_provider != self.provider:
+                logger.info(
+                    "Telegram bot provider changed from %s to %s after env reload.",
+                    self.provider.value,
+                    current_provider.value,
+                )
+                self.provider = current_provider
+
+        existing_agent = self._agents.get(chat_id)
+        if existing_agent is not None and existing_agent.provider != self.provider:
+            logger.info("Rebuilding Telegram agent for chat %s with provider %s.", chat_id, self.provider.value)
+            self._agents.pop(chat_id, None)
+
         if chat_id not in self._agents:
             sid, history = _load_user_session(chat_id)
             if sid is None:
                 sid = uuid.uuid4().hex[:12]
-            self._agents[chat_id] = Agent(provider=self.provider, sid=sid, user_id=chat_id, history=history)
+            try:
+                self._agents[chat_id] = Agent(provider=self.provider, sid=sid, user_id=chat_id, history=history)
+            except ValueError as exc:
+                fallback_provider = self._fallback_provider_for_error(exc)
+                if fallback_provider is None:
+                    raise
+                logger.warning(
+                    "Primary Telegram provider %s failed for chat %s, retrying with %s: %s",
+                    self.provider.value,
+                    chat_id,
+                    fallback_provider.value,
+                    exc,
+                )
+                self.provider = fallback_provider
+                self._agents[chat_id] = Agent(provider=self.provider, sid=sid, user_id=chat_id, history=history)
         return self._agents[chat_id]
+
+    def _fallback_provider_for_error(self, exc: Exception) -> Optional[ModelProvider]:
+        message = str(exc)
+        if self._provider_locked:
+            return None
+        if self.provider == ModelProvider.GEMINI and "reauthentication" in message.lower():
+            token_path = os.path.expanduser(os.getenv("OPENAI_CODEX_TOKEN_PATH", "~/.agent_openai_codex_auth.json"))
+            if os.path.exists(token_path):
+                return ModelProvider.OPENAI_CODEX
+        return None
 
     async def _call_api(self, endpoint: str, method: str = "GET", params: Optional[dict] = None, json_data: Optional[dict] = None) -> dict:
         """Make API call to the backend Flask server."""

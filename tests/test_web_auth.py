@@ -39,11 +39,12 @@ def test_openai_auth_saves_key_and_provider(tmp_path, monkeypatch):
 
     with app.test_client() as client:
         login(client)
-        response = client.post("/auth/openai", data={"api_key": "sk-test"})
+        response = client.post("/auth/openai", data={"api_key": "sk-test", "api_model": "gpt-5.5"})
 
     assert response.status_code == 302
     assert "MODEL_PROVIDER=openai" in env_path.read_text()
     assert "OPENAI_API_KEY=sk-test" in env_path.read_text()
+    assert "OPENAI_MODEL=gpt-5.5" in env_path.read_text()
 
 
 def test_openai_codex_oauth_redirects_with_pkce_state(monkeypatch):
@@ -80,6 +81,7 @@ def test_openai_codex_oauth_paste_saves_tokens(tmp_path, monkeypatch):
             session["openai_oauth_state"] = "state-1"
             session["openai_oauth_verifier"] = "verifier"
             session["openai_oauth_redirect_uri"] = "http://localhost:1455/auth/callback"
+            session["openai_oauth_model"] = "gpt-5.5"
         response = client.post(
             "/auth/openai/oauth/complete",
             data={"callback_value": "http://localhost:1455/auth/callback?code=code-1&state=state-1"},
@@ -87,4 +89,29 @@ def test_openai_codex_oauth_paste_saves_tokens(tmp_path, monkeypatch):
 
     assert response.status_code == 302
     assert "OPENAI_CODEX_TOKEN_PATH=" in env_path.read_text()
+    assert "OPENAI_CODEX_MODEL=gpt-5.5" in env_path.read_text()
     assert '"access_token": "access"' in token_path.read_text()
+
+
+def test_openai_model_settings_can_switch_default_provider(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr(auth, "ENV_PATH", env_path)
+
+    app.config.update(TESTING=True)
+
+    with app.test_client() as client:
+        login(client)
+        response = client.post(
+            "/auth/openai/models",
+            data={
+                "api_model": "gpt-5.4",
+                "codex_model": "gpt-5.5",
+                "active_provider": "openai-codex",
+            },
+        )
+
+    assert response.status_code == 302
+    text = env_path.read_text()
+    assert "OPENAI_MODEL=gpt-5.4" in text
+    assert "OPENAI_CODEX_MODEL=gpt-5.5" in text
+    assert "MODEL_PROVIDER=openai-codex" in text

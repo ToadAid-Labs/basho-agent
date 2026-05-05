@@ -68,6 +68,9 @@ echo 3. Start components separately:
 echo    - Telegram Bot: python agent.py bot
 echo    - Web Dashboard: python backend/app.py
 echo.
-echo 3. Access the dashboard at http://localhost:5000 📱
+echo 4. Optional setup verification after configuring credentials:
+echo    - Run: python tests\test_setup.py
+echo.
+echo 5. Access the dashboard at http://localhost:5000 📱
 echo.
 pause

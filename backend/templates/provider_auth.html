@@ -109,12 +109,20 @@
     <div class="auth-card">
         <h1>OpenAI Access</h1>
         <p>Use an API key for normal OpenAI API models, or sign in with ChatGPT to store Codex OAuth tokens.</p>
+        <p>Active provider: <strong>{{ active_provider }}</strong></p>
         {% if error %}
         <div class="error">{{ error }}</div>
         {% endif %}
         <form method="POST">
             <label for="api_key">OpenAI API Key</label>
             <input type="password" id="api_key" name="api_key" autocomplete="off" required autofocus>
+            <label for="api_model">OpenAI API Model</label>
+            <input list="openai_api_models" id="api_model" name="api_model" value="{{ openai_model }}" autocomplete="off">
+            <datalist id="openai_api_models">
+                {% for model in openai_api_model_options %}
+                <option value="{{ model }}"></option>
+                {% endfor %}
+            </datalist>
             <div class="actions">
                 <button type="submit" class="btn">Save Key</button>
                 <a href="/" class="link">Cancel</a>
@@ -122,8 +130,26 @@
         </form>
         <div class="divider"></div>
         <p>Codex OAuth uses the same PKCE flow as Codex/OpenClaw. If the browser cannot return to this app, paste the final callback URL or authorization code below.</p>
+        <form method="POST" action="/auth/openai/models" style="margin-bottom: 18px;">
+            <label for="codex_model">Codex Model</label>
+            <input list="openai_codex_models" id="codex_model" name="codex_model" value="{{ openai_codex_model }}" autocomplete="off">
+            <datalist id="openai_codex_models">
+                {% for model in openai_codex_model_options %}
+                <option value="{{ model }}"></option>
+                {% endfor %}
+            </datalist>
+            <label for="active_provider">Default OpenAI Provider</label>
+            <input list="openai_provider_modes" id="active_provider" name="active_provider" value="{{ active_provider }}" autocomplete="off">
+            <datalist id="openai_provider_modes">
+                <option value="openai"></option>
+                <option value="openai-codex"></option>
+            </datalist>
+            <div class="actions">
+                <button type="submit" class="btn secondary">Save Model Settings</button>
+            </div>
+        </form>
         <div class="actions">
-            <a href="/auth/openai/oauth" class="btn secondary">Sign in with ChatGPT</a>
+            <a href="/auth/openai/oauth?model={{ openai_codex_model | urlencode }}" class="btn secondary">Sign in with ChatGPT</a>
         </div>
         <form method="POST" action="/auth/openai/oauth/complete" style="margin-top: 18px;">
             <label for="callback_value">Callback URL or Code</label>
