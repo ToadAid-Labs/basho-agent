@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from core import agent as agent_module
-from core.agent import Agent, _telegram_tool_repeat_guard
+from core.agent import Agent, _telegram_tool_guard_result, _telegram_tool_repeat_guard
 from core.agent import (
     _build_provider_messages,
     _compact_telegram_history,
@@ -352,3 +352,22 @@ def test_telegram_repeat_guard_blocks_excessive_search_fanout(monkeypatch):
 
     assert message is not None
     assert "too many search-style tool calls" in message
+
+
+def test_telegram_repeat_guard_blocks_all_search_after_guard_activation():
+    message = _telegram_tool_repeat_guard(
+        "web_search",
+        {"web_search": 0},
+        telegram_search_like_calls=0,
+        guard_active=True,
+    )
+
+    assert message is not None
+    assert "already active" in message
+
+
+def test_telegram_tool_guard_result_tells_model_to_answer_without_more_search():
+    result = _telegram_tool_guard_result("trust_search_token", "Refine the symbol, chain, or goal.")
+
+    assert "intercepted `trust_search_token`" in result
+    assert "Do not call additional search-style tools" in result

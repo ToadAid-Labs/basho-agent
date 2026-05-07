@@ -6,7 +6,7 @@ Tracks user portfolios, trades, and performance metrics
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import List, Dict, Optional, Tuple
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, DECIMAL, Boolean
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, DECIMAL, Boolean, Text
 from sqlalchemy.orm import relationship, declarative_base
 
 Base = declarative_base()
@@ -178,6 +178,21 @@ class VolumeStatistics(Base):
     month = Column(Integer, nullable=False)
     year = Column(Integer, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PaperTradingSnapshot(Base):
+    """Durable snapshot of an in-memory paper trading account."""
+    __tablename__ = 'paper_trading_snapshots'
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, unique=True, nullable=False)
+    initial_balance = Column(DECIMAL(20, 8), nullable=False, default=Decimal('10000.00'))
+    cash = Column(DECIMAL(20, 8), nullable=False, default=Decimal('10000.00'))
+    positions_json = Column(Text, nullable=False, default='{}')
+    trades_json = Column(Text, nullable=False, default='[]')
+    is_halted = Column(Boolean, default=False)
+    halt_reason = Column(String(500), default='')
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 # Helper functions

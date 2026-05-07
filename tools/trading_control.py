@@ -263,6 +263,7 @@ def execute_paper_trade(
                 trade["planned_entry_price"] = entry_price
                 trade["stop_loss"] = stop_loss
                 trade["take_profit"] = take_profit
+                account.save_to_database()
                 return (
                     f"✅ Paper BUY Executed\n"
                     f"   Symbol: {symbol}\n"
@@ -287,6 +288,7 @@ def execute_paper_trade(
             trade["planned_entry_price"] = entry_price
             trade["stop_loss"] = stop_loss
             trade["take_profit"] = take_profit
+            account.save_to_database()
             return (
                 f"✅ Paper SELL Executed\n"
                 f"   Symbol: {symbol}\n"

@@ -41,4 +41,4 @@ def get_db() -> Generator[Session, None, None]:
 
 
 # Import and re-export models for backward compatibility
-from backend.models import Base, User, Trade, Portfolio, Holding, Performance, Alert, StrategyPerformance, VolumeStatistics
+from backend.models import Base, User, Trade, Portfolio, Holding, Performance, Alert, StrategyPerformance, VolumeStatistics, PaperTradingSnapshot

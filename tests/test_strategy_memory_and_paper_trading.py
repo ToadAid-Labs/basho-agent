@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import sys
 
-from backend.paper_trading import PaperTradingAccount, create_paper_trading_account
+from backend.paper_trading import PaperTradingAccount, PaperTradingEngine, create_paper_trading_account
 from backend.models import calculate_win_rate, calculate_strategy_performance, get_closed_trades
 from backend.portfolio_dashboard import Portfolio
 from risk_management import RiskManager
@@ -110,6 +110,37 @@ def test_execute_paper_trade_prefers_live_price_for_normal_symbols(monkeypatch):
     assert "Paper BUY Executed" in result
     assert account.positions["ETH"] == Decimal("1.0")
     assert account.paper_trades[-1]["entry_price"] == 200.0
+
+
+def test_execute_paper_trade_persists_account_snapshot(monkeypatch):
+    account = create_paper_trading_account(193, 1_000.0)
+    persisted = []
+    monkeypatch.setattr(trading_control, "_get_live_price", lambda symbol: 200.0)
+    monkeypatch.setattr(account, "save_to_database", lambda: persisted.append("saved"))
+
+    result = trading_control.execute_paper_trade(
+        user_id=193,
+        symbol="ETH",
+        side="buy",
+        amount=200.0,
+    )
+
+    assert "Paper BUY Executed" in result
+    assert persisted == ["saved"]
+
+
+def test_paper_trading_engine_lazy_loads_snapshot(monkeypatch):
+    engine = PaperTradingEngine()
+    restored = PaperTradingAccount(user_id=321, initial_balance=5000.0)
+    restored.cash = Decimal("4321.00")
+    restored.positions = {"ETH": Decimal("1.25")}
+    monkeypatch.setattr(engine, "_load_account_from_database", lambda user_id: restored if user_id == 321 else None)
+
+    account = engine.get_account(321)
+
+    assert account is restored
+    assert account.cash == Decimal("4321.00")
+    assert account.positions["ETH"] == Decimal("1.25")
 
 
 def test_validate_entry_includes_risk_reward_ratio():

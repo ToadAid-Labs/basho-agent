@@ -68,6 +68,7 @@ TELEGRAM_REPEAT_LIMITED_TOOLS = {
 }
 DEFAULT_TELEGRAM_MAX_REPEAT_PER_TOOL = 2
 DEFAULT_TELEGRAM_MAX_SEARCH_LIKE_CALLS = 4
+TELEGRAM_REPEAT_GUARD_TOOL_NAME = "telegram_search_guard"
 
 ROLES = {
     "researcher": {
@@ -255,6 +256,7 @@ class Agent:
         cached_tool_results: dict[str, str] = {}
         retryable_failure_signatures: set[str] = set()
         executed_paper_trade_signatures: set[str] = set()
+        telegram_repeat_guard_active = False
 
         final_text = ""
         tools_for_request = [] if _should_disable_tools(user_input) else self.tool_definitions
@@ -354,10 +356,31 @@ class Agent:
                             tool_name,
                             tool_call_counts,
                             telegram_search_like_calls,
+                            guard_active=telegram_repeat_guard_active,
                         )
                         if repeat_guard:
-                            yield {"type": "final_response", "content": repeat_guard}
-                            return
+                            guard_tool_use_id = f"guard_{tool_use_id}"
+                            guard_result = _telegram_tool_guard_result(tool_name, repeat_guard)
+                            telegram_repeat_guard_active = True
+                            yield {"type": "tool_start", "name": TELEGRAM_REPEAT_GUARD_TOOL_NAME, "input": {"blocked_tool": tool_name}}
+                            yield {"type": "tool_end", "name": TELEGRAM_REPEAT_GUARD_TOOL_NAME, "result": guard_result}
+                            assistant_content.append(
+                                {
+                                    "type": "tool_use",
+                                    "id": guard_tool_use_id,
+                                    "name": TELEGRAM_REPEAT_GUARD_TOOL_NAME,
+                                    "input": {"blocked_tool": tool_name},
+                                }
+                            )
+                            tool_results.append(
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": guard_tool_use_id,
+                                    "name": TELEGRAM_REPEAT_GUARD_TOOL_NAME,
+                                    "content": guard_result,
+                                }
+                            )
+                            continue
                     
                     yield {"type": "tool_start", "name": tool_name, "input": tool_input}
 
@@ -432,6 +455,7 @@ class Agent:
         cached_tool_results: dict[str, str] = {}
         retryable_failure_signatures: set[str] = set()
         executed_paper_trade_signatures: set[str] = set()
+        telegram_repeat_guard_active = False
 
         final_text = ""
         tools_for_request = [] if _should_disable_tools(user_input) else self.tool_definitions
@@ -503,9 +527,29 @@ class Agent:
                             tool_name,
                             tool_call_counts,
                             telegram_search_like_calls,
+                            guard_active=telegram_repeat_guard_active,
                         )
                         if repeat_guard:
-                            return repeat_guard
+                            guard_tool_use_id = f"guard_{tool_use_id}"
+                            guard_result = _telegram_tool_guard_result(tool_name, repeat_guard)
+                            telegram_repeat_guard_active = True
+                            assistant_content.append(
+                                {
+                                    "type": "tool_use",
+                                    "id": guard_tool_use_id,
+                                    "name": TELEGRAM_REPEAT_GUARD_TOOL_NAME,
+                                    "input": {"blocked_tool": tool_name},
+                                }
+                            )
+                            tool_results.append(
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": guard_tool_use_id,
+                                    "name": TELEGRAM_REPEAT_GUARD_TOOL_NAME,
+                                    "content": guard_result,
+                                }
+                            )
+                            continue
 
                     self.console.print(f"[dim]Calling tool: {tool_name}[/dim]")
                     tool_calls_executed += 1
@@ -693,8 +737,15 @@ def _telegram_tool_repeat_guard(
     tool_name: str,
     tool_call_counts: dict[str, int],
     telegram_search_like_calls: int,
+    guard_active: bool = False,
 ) -> str | None:
     if tool_name in TELEGRAM_REPEAT_LIMITED_TOOLS:
+        if guard_active:
+            return (
+                "Telegram search guard is already active for this request. "
+                "Do not call more search-style tools. Answer with the best result from prior tool outputs, "
+                "or ask one concise clarifying question if the symbol or chain is still ambiguous."
+            )
         max_repeat = _env_int(
             "TELEGRAM_MAX_REPEAT_PER_TOOL",
             DEFAULT_TELEGRAM_MAX_REPEAT_PER_TOOL,
@@ -716,6 +767,16 @@ def _telegram_tool_repeat_guard(
             )
 
     return None
+
+
+def _telegram_tool_guard_result(tool_name: str, guard_message: str) -> str:
+    return (
+        f"Search guard intercepted `{tool_name}`.\n"
+        f"{guard_message}\n"
+        "Use the information already gathered in this request. "
+        "Do not call additional search-style tools unless the user gives a new symbol, chain, or explicit correction. "
+        "If details are still missing, ask one concise clarifying question instead of searching again."
+    )
 
 
 def _format_tool_result_text(tool_name: str, result: str) -> str:

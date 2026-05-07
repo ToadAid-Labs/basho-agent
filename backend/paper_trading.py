@@ -10,8 +10,9 @@ from decimal import Decimal, getcontext
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
+import json
 
-from backend.database import SessionLocal, Trade, User
+from backend.database import SessionLocal, Trade, User, Portfolio, PaperTradingSnapshot
 
 getcontext().prec = 8  # High precision for financial calculations
 
@@ -505,6 +506,8 @@ class PaperTradingAccount:
         session = SessionLocal()
 
         try:
+            engine = paper_trading_engine
+            _, portfolio = engine._ensure_user_and_portfolio(session, self.user_id)
             # Get existing trade IDs for this user to avoid duplicates
             existing_trade_ids = {t.id for t in session.query(Trade.id).filter(Trade.user_id == self.user_id).all()}
 
@@ -541,7 +544,7 @@ class PaperTradingAccount:
                     # Create new
                     new_trade = Trade(
                         user_id=trade_data['user_id'],
-                        portfolio_id=1,  # Default portfolio
+                        portfolio_id=portfolio.id,
                         agent_id=trade_data.get('agent_id', self.user_id),
                         symbol=trade_data['symbol'],
                         action=trade_data['action'],
@@ -561,6 +564,7 @@ class PaperTradingAccount:
                     session.add(new_trade)
 
             session.commit()
+            engine._persist_account_snapshot(self)
             print(f"Paper trades for user {self.user_id} saved/updated in database")
 
         except Exception as e:
@@ -592,9 +596,14 @@ class PaperTradingEngine:
             PaperTradingAccount instance
         """
         if user_id not in self.accounts:
+            restored = self._load_account_from_database(user_id)
+            if restored is not None:
+                return restored
+
             account = PaperTradingAccount(user_id, initial_balance)
             self.accounts[user_id] = account
             self.initial_balances[user_id] = initial_balance
+            self._persist_account_snapshot(account)
             print(f"Created paper trading account for user {user_id} with ${initial_balance}")
         return self.accounts[user_id]
 
@@ -608,7 +617,10 @@ class PaperTradingEngine:
         Returns:
             PaperTradingAccount or None
         """
-        return self.accounts.get(user_id)
+        account = self.accounts.get(user_id)
+        if account is not None:
+            return account
+        return self._load_account_from_database(user_id)
 
     def get_all_accounts(self) -> Dict[int, PaperTradingAccount]:
         """Get all paper trading accounts."""
@@ -635,6 +647,75 @@ class PaperTradingEngine:
         for account in self.accounts.values():
             account.reset()
         print("All paper trading accounts reset")
+
+    def _ensure_user_and_portfolio(self, session, user_id: int) -> tuple[User, Portfolio]:
+        user = session.query(User).filter(User.telegram_id == str(user_id)).first()
+        if user is None:
+            user = User(telegram_id=str(user_id), username=f"telegram_{user_id}")
+            session.add(user)
+            session.flush()
+
+        portfolio = session.query(Portfolio).filter(Portfolio.user_id == user.id).first()
+        if portfolio is None:
+            portfolio = Portfolio(user_id=user.id)
+            session.add(portfolio)
+            session.flush()
+
+        return user, portfolio
+
+    def _persist_account_snapshot(self, account: PaperTradingAccount) -> None:
+        session = SessionLocal()
+        try:
+            self._ensure_user_and_portfolio(session, account.user_id)
+            snapshot = session.query(PaperTradingSnapshot).filter(
+                PaperTradingSnapshot.user_id == account.user_id
+            ).first()
+            if snapshot is None:
+                snapshot = PaperTradingSnapshot(user_id=account.user_id)
+                session.add(snapshot)
+
+            snapshot.initial_balance = Decimal(str(account.balance))
+            snapshot.cash = Decimal(str(account.cash))
+            snapshot.positions_json = json.dumps(
+                {symbol: str(quantity) for symbol, quantity in account.positions.items()},
+                sort_keys=True,
+            )
+            snapshot.trades_json = json.dumps(account.paper_trades, default=str)
+            snapshot.is_halted = account.is_halted
+            snapshot.halt_reason = account.halt_reason
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            print(f"Error saving paper trading snapshot: {e}")
+        finally:
+            session.close()
+
+    def _load_account_from_database(self, user_id: int) -> Optional[PaperTradingAccount]:
+        session = SessionLocal()
+        try:
+            snapshot = session.query(PaperTradingSnapshot).filter(
+                PaperTradingSnapshot.user_id == user_id
+            ).first()
+            if snapshot is None:
+                return None
+
+            account = PaperTradingAccount(user_id, float(snapshot.initial_balance))
+            account.cash = Decimal(str(snapshot.cash))
+            account.positions = {
+                symbol: Decimal(str(quantity))
+                for symbol, quantity in json.loads(snapshot.positions_json or "{}").items()
+            }
+            account.paper_trades = json.loads(snapshot.trades_json or "[]")
+            account.is_halted = bool(snapshot.is_halted)
+            account.halt_reason = snapshot.halt_reason or ""
+            self.accounts[user_id] = account
+            self.initial_balances[user_id] = float(snapshot.initial_balance)
+            return account
+        except Exception as e:
+            print(f"Error loading paper trading snapshot for user {user_id}: {e}")
+            return None
+        finally:
+            session.close()
 
 
 # Global paper trading engine instance

@@ -971,12 +971,21 @@ class TelegramBot:
         )
 
     def _is_wake_check(self, text: str) -> bool:
-        normalized = re.sub(r"[^a-z0-9\s]", " ", text.lower())
-        words = set(normalized.split())
-        if not words:
+        normalized = " ".join(re.sub(r"[^a-z0-9\s]", " ", text.lower()).split())
+        if not normalized:
             return False
-        wake_words = {"awake", "wake", "alive", "online", "ping", "status", "there", "hello", "hi"}
-        return bool(words & wake_words) and len(words) <= 8
+        exact_wake_checks = {
+            "awake",
+            "wake up",
+            "wake up brother",
+            "are you awake",
+            "are you there",
+            "ping",
+            "bot ping",
+            "bot status",
+            "status bot",
+        }
+        return normalized in exact_wake_checks
 
     async def _handle_tobyworld_archive_request(self, update: Update) -> None:
         archive_path = Path(__file__).resolve().parents[1] / "workspace" / "tobyworld_master_archive.md"

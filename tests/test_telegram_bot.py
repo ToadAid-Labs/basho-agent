@@ -182,6 +182,24 @@ class TestTelegramBot(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(update.message.reply_text.await_args.kwargs["parse_mode"], "HTML")
 
+    async def test_status_question_no_longer_triggers_wake_check(self):
+        update = MagicMock(spec=Update)
+        update.effective_chat.id = self.chat_id
+        update.message = AsyncMock(spec=Message)
+        update.message.message_id = 81
+        update.message.text = "good morning brother, what's the status"
+        context = MagicMock(spec=ContextTypes.DEFAULT_TYPE)
+        context.bot.send_chat_action = AsyncMock()
+        self.bot._get_agent = MagicMock(side_effect=ValueError("agent path reached"))
+
+        await self.bot._handle_message(update, context)
+
+        self.bot._get_agent.assert_called_once_with(self.chat_id)
+        self.assertIn(
+            self.bot._telegram_html_text("agent path reached"),
+            update.message.reply_text.await_args_list[1].args[0],
+        )
+
     async def test_agent_creation_error_replies_after_working_status(self):
         update = MagicMock(spec=Update)
         update.effective_chat.id = self.chat_id
