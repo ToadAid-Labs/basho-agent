@@ -134,8 +134,6 @@ def _google_token_status() -> dict:
         }
     )
     return status
-
-
 def _render_openai_auth(error: str | None = None):
     return render_template(
         'provider_auth.html',
