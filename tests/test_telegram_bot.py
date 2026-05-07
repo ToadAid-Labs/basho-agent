@@ -76,8 +76,8 @@ class TestTelegramBot(unittest.IsolatedAsyncioTestCase):
         self.assertIn("⚡ Execute Swap", buttons)
         self.assertIn("📤 Transfer", buttons)
 
-    @patch("tools.trust_wallet.get_wallet_portfolio")
-    async def test_wallet_balance_uses_token_aware_portfolio(self, mock_portfolio):
+    @patch("tools.trust_wallet.get_telegram_wallet_portfolio")
+    async def test_wallet_balance_uses_fast_telegram_portfolio(self, mock_portfolio):
         mock_portfolio.return_value = "base  token  USDC  100  $99.98"
         query = AsyncMock()
         query.data = "action:wallet_balance"
@@ -91,7 +91,7 @@ class TestTelegramBot(unittest.IsolatedAsyncioTestCase):
         await self.bot._handle_callback(update, context)
 
         query.answer.assert_awaited_once()
-        self.bot._run_blocking.assert_awaited_once_with(mock_portfolio, timeout=60)
+        self.bot._run_blocking.assert_awaited_once_with(mock_portfolio, timeout=45)
         self.bot._show_result.assert_awaited_once_with(
             query,
             "👛 On-chain Portfolio",
@@ -99,47 +99,34 @@ class TestTelegramBot(unittest.IsolatedAsyncioTestCase):
             "menu:wallet",
         )
 
-    async def test_wallet_activity_uses_cached_base_address(self):
+    def test_prepare_telegram_response_collapses_single_url_json(self):
+        response = self.bot._prepare_telegram_response(
+            '{"url": "https://basescan.org/address/0xAC710b6959995b206261A7148801716ce32C65cF"}'
+        )
+
+        self.assertEqual(
+            response,
+            "https://basescan.org/address/0xAC710b6959995b206261A7148801716ce32C65cF",
+        )
+
+    async def test_wallet_activity_uses_trust_wallet_agent_path(self):
         query = AsyncMock()
         query.data = "action:wallet_activity"
         query.message.chat_id = self.chat_id
         update = MagicMock(spec=Update)
         update.callback_query = query
         context = MagicMock(spec=ContextTypes.DEFAULT_TYPE)
-        self.bot.wallet_cache["wallet_addresses"] = {
-            "value": (
-                "╭────────\n"
-                "│ Chains base ethereum │\n"
-                "│ Address 0xabc123 │\n"
-                "│ █▀▄ │\n"
-                "╰────────"
-            ),
-            "timestamp": 1,
-        }
-        self.bot._run_blocking = AsyncMock(
-            return_value={
-                "latest_tx_hash": "0xhash",
-                "latest_block_number": 123,
-                "latest_tx": {
-                    "from": "0xfrom",
-                    "to": "0xto",
-                    "value": str(10**17),
-                },
-                "recent_txs": [{"hash": "0xhash"}],
-            }
-        )
-        self.bot._show_result = AsyncMock()
+        self.bot._force_agent_action = AsyncMock()
 
         await self.bot._handle_callback(update, context)
 
         query.answer.assert_awaited_once()
-        self.bot._show_result.assert_awaited_once()
-        result_args = self.bot._show_result.await_args.args
-        self.assertEqual(result_args[1], "👀 Recent Wallet Activity")
-        self.assertIn("Base address: 0xabc123", result_args[2]["Activity"])
-        self.assertIn("Latest tx: 0xhash", result_args[2]["Activity"])
-        self.assertIn("Value: 0.100000 ETH", result_args[2]["Activity"])
-        self.assertEqual(result_args[3], "menu:wallet")
+        self.bot._force_agent_action.assert_awaited_once()
+        force_args = self.bot._force_agent_action.await_args.args
+        self.assertEqual(force_args[0], self.chat_id)
+        self.assertIn("Trust Wallet Agent Kit", force_args[1])
+        self.assertIn("recent activity", force_args[1].lower())
+        self.assertEqual(force_args[2], query.message)
 
     def test_chart_request_detection(self):
         self.assertTrue(self.bot._is_chart_request("pull a BTC chart and show me brother"))

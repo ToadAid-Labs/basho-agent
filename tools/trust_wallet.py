@@ -14,8 +14,13 @@ DEFAULT_PORTFOLIO_CHAINS = [
     "avalanche",
     "solana",
 ]
+DEFAULT_TELEGRAM_PORTFOLIO_CHAINS = [
+    "base",
+    "ethereum",
+    "arbitrum",
+]
 
-def run_twak(args: List[str]) -> str:
+def run_twak(args: List[str], timeout: Optional[int] = None) -> str:
     """Run a twak command and return the output."""
     try:
         env = os.environ.copy()
@@ -26,11 +31,14 @@ def run_twak(args: List[str]) -> str:
             capture_output=True,
             text=True,
             env=env,
-            check=False
+            check=False,
+            timeout=timeout,
         )
         if result.returncode != 0:
             return f"Error: {result.stderr or result.stdout}"
         return result.stdout.strip()
+    except subprocess.TimeoutExpired:
+        return f"Error: timed out running {' '.join(cmd)}"
     except Exception as e:
         return f"Exception running twak: {str(e)}"
 
@@ -87,9 +95,10 @@ def get_wallet_portfolio(chains: Optional[List[str]] = None) -> str:
     selected_chains = chains or DEFAULT_PORTFOLIO_CHAINS
     rows: List[Dict[str, Any]] = []
     errors: List[str] = []
+    per_chain_timeout = int(os.getenv("TWAK_PORTFOLIO_CHAIN_TIMEOUT_SECONDS", "12"))
 
     for chain in selected_chains:
-        output = run_twak(["wallet", "portfolio", "--chains", chain, "--json"])
+        output = run_twak(["wallet", "portfolio", "--chains", chain, "--json"], timeout=per_chain_timeout)
         if output.startswith("Error:") or output.startswith("Exception"):
             errors.append(f"{chain}: {output}")
             continue
@@ -108,6 +117,11 @@ def get_wallet_portfolio(chains: Optional[List[str]] = None) -> str:
     if errors:
         return " | ".join(errors)
     return run_twak(["wallet", "portfolio"])
+
+
+def get_telegram_wallet_portfolio() -> str:
+    """Fast wallet portfolio view for Telegram UX."""
+    return get_wallet_portfolio(DEFAULT_TELEGRAM_PORTFOLIO_CHAINS)
 
 @register_tool(
     name="get_wallet_status",

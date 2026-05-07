@@ -608,11 +608,17 @@ class TelegramBot:
             elif action == "wallet_refresh":
                 await self._handle_wallet_addresses(query, refresh=True)
             elif action == "wallet_activity":
-                await self._show_wallet_activity(query)
+                await self._edit_html(query, "⌛ Fetching recent wallet activity...")
+                await self._force_agent_action(
+                    chat_id,
+                    "Use Trust Wallet Agent Kit to show the recent activity for my current wallet. "
+                    "Focus on the latest transactions and keep it concise.",
+                    query.message,
+                )
             elif action == "wallet_balance":
                 await self._edit_html(query, "⌛ Fetching portfolio...")
-                from tools.trust_wallet import get_wallet_portfolio
-                res = await self._run_blocking(get_wallet_portfolio, timeout=60)
+                from tools.trust_wallet import get_telegram_wallet_portfolio
+                res = await self._run_blocking(get_telegram_wallet_portfolio, timeout=45)
                 await self._show_result(query, "👛 On-chain Portfolio", {"Portfolio": res}, "menu:wallet")
             elif action == "wallet_gas":
                 await self._edit_html(query, "⌛ Fetching native gas balances...")
@@ -1142,8 +1148,35 @@ class TelegramBot:
     def _prepare_telegram_response(self, text: str) -> str:
         """Apply safety, cleanup, and Telegram-specific shaping in one place."""
         text = self._user_safe_agent_response(text)
+        text = self._normalize_structured_response(text)
         text = self._clean_response(text)
         return self._format_for_telegram(text)
+
+    def _normalize_structured_response(self, text: str) -> str:
+        """Collapse simple JSON payloads into cleaner Telegram text."""
+        if not isinstance(text, str):
+            text = str(text)
+
+        stripped = text.strip()
+        if not stripped.startswith("{") or not stripped.endswith("}"):
+            return text
+
+        try:
+            payload = json.loads(stripped)
+        except Exception:
+            return text
+
+        if not isinstance(payload, dict):
+            return text
+
+        url = payload.get("url")
+        title = payload.get("title")
+        if isinstance(url, str) and url.strip():
+            if isinstance(title, str) and title.strip():
+                return f"{title.strip()}\n{url.strip()}"
+            return url.strip()
+
+        return text
 
     def _telegram_html_text(self, text: Any) -> str:
         """Convert arbitrary text into Telegram-safe HTML."""
@@ -1290,59 +1323,6 @@ class TelegramBot:
             await self._send_wallet_address_qrs(query, res)
             return
         await self._show_result(query, "📍 Wallet Addresses", {"Addresses": res}, "menu:wallet")
-
-    async def _show_wallet_activity(self, query) -> None:
-        await self._edit_html(query, "⌛ Fetching recent Base wallet activity...")
-
-        addresses_output = await self._get_wallet_addresses_output(refresh=False)
-        if addresses_output.startswith("Timed out") or addresses_output.startswith("Error"):
-            await self._show_result(query, "👀 Recent Wallet Activity", {"Activity": addresses_output}, "menu:wallet")
-            return
-
-        wallet_address = _select_wallet_address(addresses_output, preferred_chain="base")
-        if not wallet_address:
-            await self._show_result(
-                query,
-                "👀 Recent Wallet Activity",
-                {"Activity": "Could not determine a Base wallet address from the cached wallet cards."},
-                "menu:wallet",
-            )
-            return
-
-        from tools.wallet_activity import get_latest_wallet_activity
-
-        activity = await self._run_blocking(lambda: get_latest_wallet_activity(wallet_address, chain="base"), timeout=45)
-        if not isinstance(activity, dict):
-            await self._show_result(query, "👀 Recent Wallet Activity", {"Activity": str(activity)}, "menu:wallet")
-            return
-
-        latest_tx = activity.get("latest_tx") or {}
-        value = latest_tx.get("value", "0")
-        try:
-            eth_value = int(value) / 10**18 if value is not None else 0.0
-            value_text = f"{eth_value:.6f} ETH"
-        except (TypeError, ValueError):
-            value_text = str(value)
-
-        summary = [
-            f"Base address: {wallet_address}",
-            f"Latest tx: {activity.get('latest_tx_hash') or 'none'}",
-            f"Block: {activity.get('latest_block_number') or 'unknown'}",
-        ]
-        if latest_tx:
-            summary.extend(
-                [
-                    f"From: {latest_tx.get('from', 'unknown')}",
-                    f"To: {latest_tx.get('to', 'unknown')}",
-                    f"Value: {value_text}",
-                ]
-            )
-
-        recent_txs = activity.get("recent_txs") or []
-        if recent_txs:
-            summary.append(f"Recent tx count shown: {min(len(recent_txs), 5)}")
-
-        await self._show_result(query, "👀 Recent Wallet Activity", {"Activity": "\n".join(summary)}, "menu:wallet")
 
     async def _send_wallet_address_qrs(self, query, wallet_output: str) -> None:
         cards = _parse_wallet_address_cards(wallet_output)
