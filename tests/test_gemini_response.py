@@ -350,3 +350,15 @@ def test_gemini_client_refreshes_and_persists_oauth_credentials(monkeypatch):
     assert persisted == [creds]
     assert creds.valid is True
     assert creds.expired is False
+
+
+def test_gemini_reauth_message_includes_refresh_error_detail():
+    from core.gemini_client import _gemini_reauth_message
+
+    class FakeRefreshError(Exception):
+        pass
+
+    message = _gemini_reauth_message(FakeRefreshError({"error": "invalid_grant", "error_description": "Token has been expired or revoked."}))
+
+    assert "invalid_grant" in message
+    assert "expired or revoked" in message

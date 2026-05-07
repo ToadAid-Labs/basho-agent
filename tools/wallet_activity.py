@@ -49,6 +49,22 @@ class BaseScanWalletActivityTracker:
         self.api_key = api_key or os.getenv("BASESCAN_API_KEY", "YourApiKeyToken")
         self.session = session or requests.Session()
 
+    def _basescan_error_message(self, payload: Dict[str, Any]) -> str:
+        message = str(payload.get("message", "Unknown BaseScan error")).strip()
+        result = str(payload.get("result", "")).strip()
+        detail = result or message or "Unknown BaseScan error"
+        detail_lower = detail.lower()
+
+        if not self.api_key or self.api_key == "YourApiKeyToken":
+            return "BaseScan API key is missing. Set BASESCAN_API_KEY to enable wallet activity."
+        if "invalid api key" in detail_lower or "missing/invalid api key" in detail_lower:
+            return "BaseScan API key is invalid or unauthorized."
+        if "rate limit" in detail_lower or "max rate limit" in detail_lower:
+            return "BaseScan rate limit reached. Try again shortly."
+        if message.upper() == "NOTOK":
+            return f"BaseScan rejected the request: {detail}"
+        return detail
+
     def get_recent_transactions(self, wallet_address: str, chain: str = "base", limit: int = 5) -> List[Dict[str, Any]]:
         """Fetch recent normal transactions for a wallet."""
         params = {
@@ -67,12 +83,15 @@ class BaseScanWalletActivityTracker:
         if not isinstance(payload, dict):
             raise ValueError("Unexpected BaseScan response shape")
 
+        status = str(payload.get("status", "")).strip()
+        if status == "0":
+            raise ValueError(self._basescan_error_message(payload))
+
         result = payload.get("result", [])
         if isinstance(result, list):
             return result
 
-        message = payload.get("message", "Unknown BaseScan error")
-        raise ValueError(message)
+        raise ValueError(self._basescan_error_message(payload))
 
     def get_latest_activity(self, wallet_address: str, chain: str = "base") -> WalletActivitySnapshot:
         """Return the latest known transaction activity for a wallet."""

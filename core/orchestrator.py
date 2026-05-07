@@ -188,16 +188,16 @@ def run_autonomous_cycle(target_chat_id: int):
                                 })
                                 
                                 msg = (
-                                    f"🐺 **PREDATOR CONSENSUS APPROVED**\n\n"
+                                    f"🐺 Predator Consensus Approved\n\n"
                                     f"Asset: #{symbol} | Conviction: {conviction.get('conviction_score')*100:.0f}%\n"
                                     f"Macro: {global_regime} | OBI: {val_res.get('obi_score', 'N/A')}\n\n"
-                                    f"**Risk Mgr**: ✅ {risk_res.get('reason')}\n"
-                                    f"**Validator**: ✅ {val_res.get('critique')}\n\n"
-                                    f"**Plan:**\n"
-                                    f"- Entry: {setup.get('trade_plan', {}).get('entry_range')}\n"
-                                    f"- Stop: {setup.get('trade_plan', {}).get('stop_loss')}\n"
-                                    f"- Target: {setup.get('trade_plan', {}).get('take_profit')}\n\n"
-                                    f"Neural cross-check PASSED. Unanimous Predator Consensus."
+                                    f"Risk Mgr: ✅ {risk_res.get('reason')}\n"
+                                    f"Validator: ✅ {val_res.get('critique')}\n\n"
+                                    f"Plan:\n"
+                                    f"• Entry: {setup.get('trade_plan', {}).get('entry_range')}\n"
+                                    f"• Stop: {setup.get('trade_plan', {}).get('stop_loss')}\n"
+                                    f"• Target: {setup.get('trade_plan', {}).get('take_profit')}\n\n"
+                                    f"Neural cross-check passed. Unanimous Predator Consensus."
                                 )
                                 
                                 buttons = {"inline_keyboard": [[
@@ -215,7 +215,7 @@ def run_autonomous_cycle(target_chat_id: int):
 
         registry.update(process_id, "completed", f"Found {proposals_count} predator-approved opportunities.")
         if proposals_count == 0:
-            send_telegram_message(target_chat_id, "🔍 **Predator Scan Complete**\n\nNo trade setups reached a high-conviction consensus. The Neural Synthesizer and OBI Validator filtered out low-probability noise. Next scan in 4 hours.")
+            send_telegram_message(target_chat_id, "🔍 Predator Scan Complete\n\nNo trade setups reached a high-conviction consensus. The Neural Synthesizer and OBI Validator filtered out low-probability noise. Next scan in 4 hours.")
 
     except Exception as e:
         logger.error(f"Failed autonomous cycle: {e}")

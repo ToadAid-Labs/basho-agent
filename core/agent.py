@@ -2,6 +2,7 @@ import logging
 import json
 import os
 import time
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Generator
 
@@ -35,6 +36,7 @@ SYSTEM_PROMPT = """You are a sophisticated Crypto Trading AI Agent. You have acc
 - Set intelligent background alerts for price, sentiment, whale moves, and wallet activity (set_smart_alert).
 - Optimize trading strategy parameters through automated backtesting grid search (optimize_strategy_parameters).
 - Generate comprehensive daily alpha reports from news and social catalysts (get_daily_alpha).
+- Generate concise multi-asset market summaries in one call (market_report).
 - Calculate professional-grade technical indicators like SuperTrend, ADX, and RSI (get_pro_indicators).
 - Identify institutional market structure, support/resistance, and fair value gaps (analyze_market_structure).
 - Perform multi-timeframe analysis to confirm trends across 1h, 4h, and 1d charts (get_multi_timeframe_signal).
@@ -54,8 +56,18 @@ Be concise, practical, and data-driven. Execute the steps needed, then explain t
 MAX_ITERATIONS = 50
 DEFAULT_MAX_PROVIDER_MESSAGES = 10
 DEFAULT_MAX_PROVIDER_CHARS = 60_000
-DEFAULT_TELEGRAM_MAX_TOOL_CALLS = 12
+DEFAULT_TELEGRAM_MAX_TOOL_CALLS = 8
 TELEGRAM_BLOCKED_TOOLS = {"bash", "read_file", "write_file"}
+TELEGRAM_REPEAT_LIMITED_TOOLS = {
+    "web_search",
+    "web_fetch",
+    "trust_search_token",
+    "list_trading_symbols",
+    "check_smart_money_holdings",
+    "hunt_insider_wallets",
+}
+DEFAULT_TELEGRAM_MAX_REPEAT_PER_TOOL = 2
+DEFAULT_TELEGRAM_MAX_SEARCH_LIKE_CALLS = 4
 
 ROLES = {
     "researcher": {
@@ -190,6 +202,7 @@ class Agent:
                 "\n\nTELEGRAM EXECUTION RULES:"
                 "\n- Telegram requests have a strict tool-call budget. Use the fewest tools that can answer the request."
                 "\n- Prefer composite tools over manual fan-out. For entry analysis, prefer `trade_decision_engine` instead of chaining `get_pro_indicators`, `get_multi_timeframe_signal`, `get_swing_setup`, and `analyze_market_structure` separately."
+                "\n- For requests like 'market report', 'daily market update', or 'market overview', prefer `market_report` instead of chaining search/news/indicator tools manually."
                 "\n- Do not call the same lookup tool repeatedly for the same symbol unless the user provides new constraints."
                 "\n- For broad opportunity searches, screen at most 2-3 symbols first, then deepen only on the strongest candidate."
             )
@@ -233,8 +246,12 @@ class Agent:
     def chat_stream(self, user_input: str) -> Generator[dict[str, Any], None, None]:
         """Generator that yields chat tokens and tool activity events."""
         start_request = time.time()
+        if self.user_id is not None:
+            self.messages = _compact_telegram_history(self.messages)
         self.messages.append({"role": "user", "content": user_input})
         tool_calls_executed = 0
+        tool_call_counts: dict[str, int] = defaultdict(int)
+        telegram_search_like_calls = 0
         cached_tool_results: dict[str, str] = {}
         retryable_failure_signatures: set[str] = set()
         executed_paper_trade_signatures: set[str] = set()
@@ -332,11 +349,23 @@ class Agent:
                         final_text = _tool_budget_message()
                         yield {"type": "final_response", "content": final_text}
                         return
+                    if self.user_id is not None:
+                        repeat_guard = _telegram_tool_repeat_guard(
+                            tool_name,
+                            tool_call_counts,
+                            telegram_search_like_calls,
+                        )
+                        if repeat_guard:
+                            yield {"type": "final_response", "content": repeat_guard}
+                            return
                     
                     yield {"type": "tool_start", "name": tool_name, "input": tool_input}
 
                     self.console.print(f"[dim]Calling tool: {tool_name}[/dim]")
                     tool_calls_executed += 1
+                    tool_call_counts[tool_name] += 1
+                    if _is_telegram_search_like_tool(tool_name):
+                        telegram_search_like_calls += 1
                     tool_start = time.time()
                     result = execute_tool(tool_name, tool_input)
                     cached_tool_results[call_signature] = result
@@ -394,8 +423,12 @@ class Agent:
     def chat(self, user_input: str) -> str:
         """Send a message to the agent, handle tool calls, return the final text response."""
         start_request = time.time()
+        if self.user_id is not None:
+            self.messages = _compact_telegram_history(self.messages)
         self.messages.append({"role": "user", "content": user_input})
         tool_calls_executed = 0
+        tool_call_counts: dict[str, int] = defaultdict(int)
+        telegram_search_like_calls = 0
         cached_tool_results: dict[str, str] = {}
         retryable_failure_signatures: set[str] = set()
         executed_paper_trade_signatures: set[str] = set()
@@ -465,9 +498,20 @@ class Agent:
 
                     if self.max_tool_calls and tool_calls_executed >= self.max_tool_calls:
                         return _tool_budget_message()
+                    if self.user_id is not None:
+                        repeat_guard = _telegram_tool_repeat_guard(
+                            tool_name,
+                            tool_call_counts,
+                            telegram_search_like_calls,
+                        )
+                        if repeat_guard:
+                            return repeat_guard
 
                     self.console.print(f"[dim]Calling tool: {tool_name}[/dim]")
                     tool_calls_executed += 1
+                    tool_call_counts[tool_name] += 1
+                    if _is_telegram_search_like_tool(tool_name):
+                        telegram_search_like_calls += 1
                     tool_start = time.time()
                     result = execute_tool(tool_name, tool_input)
                     cached_tool_results[call_signature] = result
@@ -542,6 +586,40 @@ def _build_messages(history: list[dict[dict, Any]]) -> list[dict[str, Any]]:
     return messages
 
 
+def _compact_telegram_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Strip prior Telegram tool transcripts so new turns start from clean text context."""
+    compacted: list[dict[str, Any]] = []
+
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+
+        if isinstance(content, str):
+            text = content.strip()
+        elif isinstance(content, list):
+            text_parts: list[str] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text":
+                    value = str(block.get("text", "")).strip()
+                    if value:
+                        text_parts.append(value)
+            text = "\n".join(text_parts).strip()
+        else:
+            text = str(content).strip()
+
+        if not text:
+            continue
+
+        if compacted and compacted[-1]["role"] == role:
+            compacted[-1]["content"] = f"{compacted[-1]['content']}\n\n{text}".strip()
+        else:
+            compacted.append({"role": role, "content": text})
+
+    return compacted
+
+
 def _should_return_gemini_tool_directly(provider: ModelProvider, thought_signature: Any) -> bool:
     return False
 
@@ -605,6 +683,39 @@ def _tool_budget_message() -> str:
         "I stopped because this request tried to use too many tools at once. "
         "Please ask a narrower question."
     )
+
+
+def _is_telegram_search_like_tool(tool_name: str) -> bool:
+    return tool_name in TELEGRAM_REPEAT_LIMITED_TOOLS
+
+
+def _telegram_tool_repeat_guard(
+    tool_name: str,
+    tool_call_counts: dict[str, int],
+    telegram_search_like_calls: int,
+) -> str | None:
+    if tool_name in TELEGRAM_REPEAT_LIMITED_TOOLS:
+        max_repeat = _env_int(
+            "TELEGRAM_MAX_REPEAT_PER_TOOL",
+            DEFAULT_TELEGRAM_MAX_REPEAT_PER_TOOL,
+        )
+        if max_repeat > 0 and tool_call_counts.get(tool_name, 0) >= max_repeat:
+            return (
+                f"I stopped because the request kept repeating `{tool_name}` too many times. "
+                "Refine the symbol, chain, or goal and try again."
+            )
+
+        max_search_like = _env_int(
+            "TELEGRAM_MAX_SEARCH_LIKE_CALLS",
+            DEFAULT_TELEGRAM_MAX_SEARCH_LIKE_CALLS,
+        )
+        if max_search_like > 0 and telegram_search_like_calls >= max_search_like:
+            return (
+                "I stopped because this Telegram request branched into too many search-style tool calls. "
+                "Ask for one symbol, one chain, or one task at a time."
+            )
+
+    return None
 
 
 def _format_tool_result_text(tool_name: str, result: str) -> str:
