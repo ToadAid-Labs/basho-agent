@@ -4,7 +4,7 @@ import pytest
 
 from memory import alerts as alert_memory
 from memory.alerts import AlertStore
-from tools.wallet_activity import check_wallet_activity
+from tools.wallet_activity import BaseScanWalletActivityTracker, check_wallet_activity
 
 
 def test_alert_store_persists_wallet_activity_fields(tmp_path, monkeypatch):
@@ -67,3 +67,24 @@ def test_wallet_activity_tracker_detects_new_transaction(monkeypatch):
     assert result["latest_tx_hash"] == "0xnewhash"
     assert result["latest_block_number"] == 12345678
 
+
+def test_wallet_activity_tracker_reports_missing_basescan_api_key(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "status": "0",
+                "message": "NOTOK",
+                "result": "Missing/Invalid API Key",
+            }
+
+    class FakeSession:
+        def get(self, *args, **kwargs):
+            return FakeResponse()
+
+    tracker = BaseScanWalletActivityTracker(api_key="YourApiKeyToken", session=FakeSession())
+
+    with pytest.raises(ValueError, match="BaseScan API key is missing"):
+        tracker.get_recent_transactions("0xabc")

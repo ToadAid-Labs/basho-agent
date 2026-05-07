@@ -9,9 +9,11 @@ from flask_cors import CORS
 from typing import Optional
 import os
 import sys
+import json
 import logging
 import threading
 import time
+from pathlib import Path
 from functools import wraps
 from urllib.parse import parse_qs, urlparse
 
@@ -103,6 +105,37 @@ def get_web_agent():
     return web_agent
 
 
+def _google_token_status() -> dict:
+    token_path = Path(os.path.expanduser(os.getenv("GOOGLE_TOKEN_PATH", "~/.agent_google_token.json")))
+    status = {
+        "token_path": str(token_path),
+        "exists": token_path.exists(),
+        "active_provider": get_provider().value,
+    }
+    if not token_path.exists():
+        return status
+
+    try:
+        raw = json.loads(token_path.read_text())
+    except Exception as exc:  # noqa: BLE001
+        status["error"] = f"Failed to read token file: {exc}"
+        return status
+
+    status.update(
+        {
+            "modified_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(token_path.stat().st_mtime)),
+            "client_id": raw.get("client_id"),
+            "has_refresh_token": bool(raw.get("refresh_token")),
+            "has_client_secret": bool(raw.get("client_secret")),
+            "expiry": raw.get("expiry"),
+            "scopes": raw.get("scopes", []),
+            "token_uri": raw.get("token_uri"),
+            "account": raw.get("account"),
+        }
+    )
+    return status
+
+
 def _render_openai_auth(error: str | None = None):
     return render_template(
         'provider_auth.html',
@@ -166,6 +199,13 @@ def google_auth_callback():
         flash(f'Google authentication failed: {exc}', 'error')
 
     return redirect(url_for('index'))
+
+
+@app.route('/auth/google/status')
+@login_required
+def google_auth_status():
+    """Return non-secret Gemini/Google OAuth status for debugging."""
+    return jsonify(_google_token_status())
 
 @app.route('/auth/openai', methods=['GET', 'POST'])
 @login_required

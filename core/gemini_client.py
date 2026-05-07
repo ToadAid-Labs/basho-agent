@@ -36,9 +36,35 @@ def validate_gemini_oauth_scopes(creds) -> None:
         )
 
 
-def _gemini_reauth_message() -> str:
+def _google_refresh_error_detail(exc: Exception) -> str:
+    """Extract the most useful Google OAuth refresh failure detail for operators."""
+    for attr in ("details", "message"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    args = getattr(exc, "args", ())
+    if args:
+        first = args[0]
+        if isinstance(first, Mapping):
+            error = first.get("error")
+            description = first.get("error_description") or first.get("description")
+            parts = [part for part in (error, description) if part]
+            if parts:
+                return ": ".join(parts)
+        if isinstance(first, str) and first.strip():
+            return first.strip()
+
+    text = str(exc).strip()
+    return text or type(exc).__name__
+
+
+def _gemini_reauth_message(exc: Exception | None = None) -> str:
+    detail = _google_refresh_error_detail(exc) if exc is not None else ""
+    suffix = f" Refresh failed: {detail}." if detail else ""
     return (
-        "Gemini OAuth needs reauthentication. Run `python3 agent.py login` and "
+        "Gemini OAuth needs reauthentication."
+        f"{suffix} Run `python3 agent.py login` and "
         "choose Google/Gemini Web Auth again, or set `GEMINI_API_KEY` in `.env`."
     )
 
@@ -91,7 +117,8 @@ class GeminiClient:
             try:
                 creds.refresh(Request())
             except RefreshError as exc:
-                raise ValueError(_gemini_reauth_message()) from exc
+                logger.warning("Gemini OAuth refresh failed during client setup: %s", _google_refresh_error_detail(exc))
+                raise ValueError(_gemini_reauth_message(exc)) from exc
             self._persist_legacy_oauth_credentials(creds)
         legacy_genai.configure(credentials=creds)
         self.client = legacy_genai.GenerativeModel(model_name=self.model_name)
@@ -152,7 +179,8 @@ class GeminiClient:
             try:
                 creds.refresh(Request())
             except RefreshError as exc:
-                raise ValueError(_gemini_reauth_message()) from exc
+                logger.warning("Gemini OAuth refresh failed during request: %s", _google_refresh_error_detail(exc))
+                raise ValueError(_gemini_reauth_message(exc)) from exc
             self._persist_legacy_oauth_credentials(creds)
 
     def create_message(

@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+import json
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -29,6 +30,37 @@ def test_google_auth_redirects_with_state(monkeypatch):
         assert response.headers["Location"].startswith("https://accounts.google.com/")
         with client.session_transaction() as session:
             assert session["google_oauth_state"] == "test-state"
+
+
+def test_google_auth_status_reports_token_metadata(tmp_path, monkeypatch):
+    token_path = tmp_path / "google-token.json"
+    token_path.write_text(json.dumps({
+        "client_id": "client-123",
+        "client_secret": "secret-xyz",
+        "refresh_token": "refresh-token",
+        "expiry": "2026-05-07T12:34:56Z",
+        "scopes": ["scope:a", "scope:b"],
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "account": "",
+    }))
+    monkeypatch.setenv("GOOGLE_TOKEN_PATH", str(token_path))
+
+    app.config.update(TESTING=True)
+
+    with app.test_client() as client:
+        login(client)
+        response = client.get("/auth/google/status")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["exists"] is True
+    assert payload["token_path"] == str(token_path)
+    assert payload["client_id"] == "client-123"
+    assert payload["has_refresh_token"] is True
+    assert payload["has_client_secret"] is True
+    assert payload["expiry"] == "2026-05-07T12:34:56Z"
+    assert payload["scopes"] == ["scope:a", "scope:b"]
+    assert payload["token_uri"] == "https://oauth2.googleapis.com/token"
 
 
 def test_openai_auth_saves_key_and_provider(tmp_path, monkeypatch):

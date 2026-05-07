@@ -1,9 +1,10 @@
 from types import SimpleNamespace
 
 from core import agent as agent_module
-from core.agent import Agent
+from core.agent import Agent, _telegram_tool_repeat_guard
 from core.agent import (
     _build_provider_messages,
+    _compact_telegram_history,
     _format_direct_tool_response,
     _should_disable_tools,
     _should_return_gemini_tool_directly,
@@ -61,9 +62,41 @@ def test_build_provider_messages_prepends_summary_inside_char_budget(monkeypatch
 
 
 def test_unsigned_gemini_tool_calls_return_directly():
-    assert _should_return_gemini_tool_directly(ModelProvider.GEMINI, None)
+    assert not _should_return_gemini_tool_directly(ModelProvider.GEMINI, None)
     assert not _should_return_gemini_tool_directly(ModelProvider.GEMINI, "signature")
     assert not _should_return_gemini_tool_directly(ModelProvider.OLLAMA, None)
+
+
+def test_compact_telegram_history_drops_prior_tool_transcripts():
+    compacted = _compact_telegram_history(
+        [
+            {"role": "user", "content": "give me a market report"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Checking BTC and ETH."},
+                    {"type": "tool_use", "name": "web_search", "input": {"query": "btc news"}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "name": "web_search", "content": "result payload"},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "BTC looks firm."},
+                ],
+            },
+        ]
+    )
+
+    assert compacted == [
+        {"role": "user", "content": "give me a market report"},
+        {"role": "assistant", "content": "Checking BTC and ETH.\n\nBTC looks firm."},
+    ]
 
 
 def test_format_direct_tool_response_includes_intro_and_results():
@@ -292,3 +325,30 @@ def test_telegram_agent_prompt_prefers_composite_analysis(monkeypatch):
 
     assert "Telegram requests have a strict tool-call budget" in agent.system_prompt
     assert "trade_decision_engine" in agent.system_prompt
+    assert "market_report" in agent.system_prompt
+
+
+def test_telegram_repeat_guard_blocks_same_search_tool_too_many_times(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_MAX_REPEAT_PER_TOOL", raising=False)
+
+    message = _telegram_tool_repeat_guard(
+        "web_search",
+        {"web_search": 2},
+        telegram_search_like_calls=2,
+    )
+
+    assert message is not None
+    assert "repeating `web_search` too many times" in message
+
+
+def test_telegram_repeat_guard_blocks_excessive_search_fanout(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_MAX_SEARCH_LIKE_CALLS", raising=False)
+
+    message = _telegram_tool_repeat_guard(
+        "trust_search_token",
+        {"trust_search_token": 1},
+        telegram_search_like_calls=4,
+    )
+
+    assert message is not None
+    assert "too many search-style tool calls" in message

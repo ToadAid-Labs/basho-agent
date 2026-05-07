@@ -62,6 +62,85 @@ class TestTelegramBot(unittest.IsolatedAsyncioTestCase):
         self.assertIn("👁 Add Watch", buttons)
         self.assertIn("🚨 Latest Alerts", buttons)
 
+    async def test_show_wallet_menu_includes_useful_wallet_actions(self):
+        query = AsyncMock()
+
+        await self.bot._show_wallet_menu(query)
+
+        query.edit_message_text.assert_awaited_once()
+        args, kwargs = query.edit_message_text.call_args
+        self.assertIn("recent Base activity", args[0])
+        buttons = [button.text for row in kwargs["reply_markup"].inline_keyboard for button in row]
+        self.assertIn("📜 Tx History", buttons)
+        self.assertIn("👀 Recent Activity", buttons)
+        self.assertIn("⚡ Execute Swap", buttons)
+        self.assertIn("📤 Transfer", buttons)
+
+    @patch("tools.trust_wallet.get_wallet_portfolio")
+    async def test_wallet_balance_uses_token_aware_portfolio(self, mock_portfolio):
+        mock_portfolio.return_value = "base  token  USDC  100  $99.98"
+        query = AsyncMock()
+        query.data = "action:wallet_balance"
+        query.message.chat_id = self.chat_id
+        update = MagicMock(spec=Update)
+        update.callback_query = query
+        context = MagicMock(spec=ContextTypes.DEFAULT_TYPE)
+        self.bot._run_blocking = AsyncMock(return_value=mock_portfolio.return_value)
+        self.bot._show_result = AsyncMock()
+
+        await self.bot._handle_callback(update, context)
+
+        query.answer.assert_awaited_once()
+        self.bot._run_blocking.assert_awaited_once_with(mock_portfolio, timeout=60)
+        self.bot._show_result.assert_awaited_once_with(
+            query,
+            "👛 On-chain Portfolio",
+            {"Portfolio": mock_portfolio.return_value},
+            "menu:wallet",
+        )
+
+    async def test_wallet_activity_uses_cached_base_address(self):
+        query = AsyncMock()
+        query.data = "action:wallet_activity"
+        query.message.chat_id = self.chat_id
+        update = MagicMock(spec=Update)
+        update.callback_query = query
+        context = MagicMock(spec=ContextTypes.DEFAULT_TYPE)
+        self.bot.wallet_cache["wallet_addresses"] = {
+            "value": (
+                "╭────────\n"
+                "│ Chains base ethereum │\n"
+                "│ Address 0xabc123 │\n"
+                "│ █▀▄ │\n"
+                "╰────────"
+            ),
+            "timestamp": 1,
+        }
+        self.bot._run_blocking = AsyncMock(
+            return_value={
+                "latest_tx_hash": "0xhash",
+                "latest_block_number": 123,
+                "latest_tx": {
+                    "from": "0xfrom",
+                    "to": "0xto",
+                    "value": str(10**17),
+                },
+                "recent_txs": [{"hash": "0xhash"}],
+            }
+        )
+        self.bot._show_result = AsyncMock()
+
+        await self.bot._handle_callback(update, context)
+
+        query.answer.assert_awaited_once()
+        self.bot._show_result.assert_awaited_once()
+        result_args = self.bot._show_result.await_args.args
+        self.assertEqual(result_args[1], "👀 Recent Wallet Activity")
+        self.assertIn("Base address: 0xabc123", result_args[2]["Activity"])
+        self.assertIn("Latest tx: 0xhash", result_args[2]["Activity"])
+        self.assertIn("Value: 0.100000 ETH", result_args[2]["Activity"])
+        self.assertEqual(result_args[3], "menu:wallet")
+
     def test_chart_request_detection(self):
         self.assertTrue(self.bot._is_chart_request("pull a BTC chart and show me brother"))
         self.assertEqual(self.bot._extract_chart_symbol("show bitcoin chart"), "BTC")
@@ -109,9 +188,12 @@ class TestTelegramBot(unittest.IsolatedAsyncioTestCase):
         await self.bot._handle_message(update, context)
 
         self.bot._get_agent.assert_not_called()
-        update.message.reply_text.assert_awaited_once_with(
-            "Awake. Telegram is connected and the bot process is running."
+        update.message.reply_text.assert_awaited_once()
+        self.assertEqual(
+            update.message.reply_text.await_args.args[0],
+            self.bot._telegram_html_text("Awake. Telegram is connected and the bot process is running."),
         )
+        self.assertEqual(update.message.reply_text.await_args.kwargs["parse_mode"], "HTML")
 
     async def test_agent_creation_error_replies_after_working_status(self):
         update = MagicMock(spec=Update)
@@ -127,8 +209,14 @@ class TestTelegramBot(unittest.IsolatedAsyncioTestCase):
 
         self.bot._get_agent.assert_called_once_with(self.chat_id)
         self.assertEqual(update.message.reply_text.await_count, 2)
-        self.assertEqual(update.message.reply_text.await_args_list[0].args[0], "⌛ Working on that...")
-        self.assertIn("Gemini OAuth needs reauthentication", update.message.reply_text.await_args_list[1].args[0])
+        self.assertEqual(
+            update.message.reply_text.await_args_list[0].args[0],
+            self.bot._telegram_html_text("⌛ Working on that..."),
+        )
+        self.assertIn(
+            self.bot._telegram_html_text("Gemini OAuth needs reauthentication"),
+            update.message.reply_text.await_args_list[1].args[0],
+        )
 
     @patch("core.telegram_bot.Agent")
     @patch("core.telegram_bot.os.path.exists")
@@ -207,7 +295,12 @@ class TestTelegramBot(unittest.IsolatedAsyncioTestCase):
 
         await self.bot._handle_chart_request(update, context, "pull a BTC chart and show me")
 
-        update.message.reply_text.assert_awaited_once_with("Chart rendering requires `mplfinance`.")
+        update.message.reply_text.assert_awaited_once()
+        self.assertEqual(
+            update.message.reply_text.await_args.args[0],
+            self.bot._telegram_html_text("Chart rendering requires `mplfinance`."),
+        )
+        self.assertEqual(update.message.reply_text.await_args.kwargs["parse_mode"], "HTML")
         update.message.reply_photo.assert_not_called()
 
     @patch("requests.get")

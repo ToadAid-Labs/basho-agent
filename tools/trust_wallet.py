@@ -4,6 +4,17 @@ import os
 from typing import Dict, Any, Optional, List
 from core.tools import register_tool
 
+DEFAULT_PORTFOLIO_CHAINS = [
+    "base",
+    "ethereum",
+    "arbitrum",
+    "optimism",
+    "polygon",
+    "bsc",
+    "avalanche",
+    "solana",
+]
+
 def run_twak(args: List[str]) -> str:
     """Run a twak command and return the output."""
     try:
@@ -22,6 +33,81 @@ def run_twak(args: List[str]) -> str:
         return result.stdout.strip()
     except Exception as e:
         return f"Exception running twak: {str(e)}"
+
+
+def _is_nonzero_balance(value: Any) -> bool:
+    text = str(value).strip()
+    if not text:
+        return False
+    try:
+        return float(text) > 0
+    except ValueError:
+        return any(ch != "0" for ch in text if ch.isdigit())
+
+
+def _format_portfolio_rows(rows: List[Dict[str, Any]]) -> str:
+    if not rows:
+        return "No non-zero balances found across the configured portfolio chains."
+
+    headers = ("Chain", "Type", "Symbol", "Balance", "USD")
+    formatted_rows: List[tuple[str, str, str, str, str]] = []
+    total_usd = 0.0
+
+    for row in rows:
+        usd_value = float(row.get("usdValue") or 0)
+        total_usd += usd_value
+        formatted_rows.append(
+            (
+                str(row.get("chain", "")),
+                str(row.get("type", "")),
+                str(row.get("symbol", "")),
+                str(row.get("balance", "")),
+                f"${usd_value:,.2f}",
+            )
+        )
+
+    widths = [len(header) for header in headers]
+    for row in formatted_rows:
+        for idx, value in enumerate(row):
+            widths[idx] = max(widths[idx], len(value))
+
+    def line(values: tuple[str, str, str, str, str]) -> str:
+        return "  ".join(value.ljust(widths[idx]) for idx, value in enumerate(values))
+
+    divider = "─" * len(line(headers))
+    parts = [line(headers), divider]
+    parts.extend(line(row) for row in formatted_rows)
+    parts.append(divider)
+    parts.append(f"Total USD: ${total_usd:,.2f}")
+    return "\n".join(parts)
+
+
+def get_wallet_portfolio(chains: Optional[List[str]] = None) -> str:
+    """Get a token-aware wallet portfolio for the highest-signal chains."""
+    selected_chains = chains or DEFAULT_PORTFOLIO_CHAINS
+    rows: List[Dict[str, Any]] = []
+    errors: List[str] = []
+
+    for chain in selected_chains:
+        output = run_twak(["wallet", "portfolio", "--chains", chain, "--json"])
+        if output.startswith("Error:") or output.startswith("Exception"):
+            errors.append(f"{chain}: {output}")
+            continue
+        try:
+            chain_rows = json.loads(output)
+        except json.JSONDecodeError:
+            errors.append(f"{chain}: invalid JSON from twak wallet portfolio")
+            continue
+
+        for row in chain_rows:
+            if _is_nonzero_balance(row.get("balance")) or float(row.get("usdValue") or 0) > 0:
+                rows.append(row)
+
+    if rows:
+        return _format_portfolio_rows(rows)
+    if errors:
+        return " | ".join(errors)
+    return run_twak(["wallet", "portfolio"])
 
 @register_tool(
     name="get_wallet_status",

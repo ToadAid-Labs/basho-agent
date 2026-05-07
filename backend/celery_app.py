@@ -387,6 +387,7 @@ def _send_telegram_notification(notification: Notification) -> bool:
     """Send notification via Telegram."""
     from backend.database import get_db_manager
     from sqlalchemy.orm import Session
+    from core.notifications import _escape_markdownv2
 
     db = get_db_manager()
     session = db.get_session()
@@ -395,12 +396,17 @@ def _send_telegram_notification(notification: Notification) -> bool:
         from telegram import Bot
         bot = Bot(token=notification.agent.bot_token)
 
-        message = f"🔔 *{notification.title}*\n\n{notification.message}\n\n*Data:* {json.dumps(notification.data, indent=2, ensure_ascii=False)}"
+        message = (
+            f"🔔 {notification.title}\n\n"
+            f"{notification.message}\n\n"
+            f"Data:\n{json.dumps(notification.data, indent=2, ensure_ascii=False)}"
+        )
 
         bot.send_message(
             chat_id=notification.user_id,
-            text=message,
-            parse_mode="Markdown"
+            text=_escape_markdownv2(message),
+            parse_mode="MarkdownV2",
+            disable_web_page_preview=True,
         )
 
         session.close()
