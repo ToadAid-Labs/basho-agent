@@ -154,6 +154,14 @@ def test_request_tool_plan_prefers_direct_tracked_balance_for_degen_position():
     assert plan["stages"][0] == {"get_tracked_token_balance"}
 
 
+def test_request_tool_plan_prefers_compact_reentry_flow_for_degen_watch_request():
+    plan = _build_request_tool_plan("continue to look for opportunity or watch DEGEN price to come down then buy back in")
+
+    assert plan["mode"] == "tracked_token_reentry_watch"
+    assert plan["stages"][0] == {"trust_get_token_price"}
+    assert plan["stages"][1] == {"trade_decision_engine", "get_swing_setup"}
+
+
 def test_tool_plan_guard_defers_unrelated_scan_for_sell_remaining():
     plan = _build_request_tool_plan("sell remaining DEGEN")
 
@@ -551,6 +559,49 @@ def test_sell_remaining_degen_does_not_trigger_unrelated_market_scans(monkeypatc
         ("get_tracked_token_balance", {"symbol": "DEGEN", "chain": "base"}),
         ("trust_get_swap_quote", {"from_token": "DEGEN", "to_token": "ETH", "amount": "100", "chain": "base"}),
     ]
+
+
+def test_degen_watch_request_blocks_market_report_fanout(monkeypatch):
+    class FakeClient:
+        model = "fake"
+
+        def __init__(self):
+            self.calls = 0
+
+        def create_message(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(
+                    content=[SimpleNamespace(type="tool_use", name="market_report", input={"symbols": ["DEGEN"]}, id="tool-1")]
+                )
+            return SimpleNamespace(
+                content=[
+                    SimpleNamespace(
+                        type="text",
+                        text="I’m watching DEGEN with price-first staging and deferred the broader scans.",
+                    )
+                ]
+            )
+
+    fake_client = FakeClient()
+    executed = []
+
+    monkeypatch.setattr(agent_module, "create_client", lambda provider: fake_client)
+    monkeypatch.setattr(
+        agent_module,
+        "get_tool_definitions",
+        lambda: [{"name": "market_report"}, {"name": "trust_get_token_price"}, {"name": "trade_decision_engine"}],
+    )
+    monkeypatch.setattr(agent_module, "latest_summary", lambda sid: None)
+    monkeypatch.setattr(agent_module, "save_session_for_provider", lambda *args, **kwargs: None)
+    monkeypatch.setattr(agent_module, "execute_tool", lambda name, raw_input: executed.append((name, raw_input)) or "ok")
+
+    agent = Agent(provider=ModelProvider.ANTHROPIC, sid="test", history=[])
+
+    response = agent.chat("continue to look for opportunity or watch DEGEN price to come down then buy back in")
+
+    assert response == "I’m watching DEGEN with price-first staging and deferred the broader scans."
+    assert executed == []
 
 
 def test_telegram_agent_prompt_prefers_composite_analysis(monkeypatch):
