@@ -49,7 +49,7 @@ SYSTEM_PROMPT = """You are a sophisticated Crypto Trading AI Agent. You have acc
 - Check currently running background tasks (check_background_processes).
 
 Use these tools to help the user with crypto trading, portfolio management, and market analysis.
-You can perform both simulated (paper) trading and real on-chain trading if the user provides a wallet and password.
+You can perform both simulated (paper) trading and real on-chain trading, but you must never ask for or accept wallet passwords, seed phrases, private keys, signing secrets, or similar credentials in chat. Real on-chain execution must use only saved/local TWAK credentials. If the signer is locked or unavailable, instruct the user to unlock it through the secure local TWAK flow and retry.
 When executing trades, always consider risk management.
 Be concise, practical, and data-driven. Execute the steps needed, then explain the result clearly."""
 
@@ -249,6 +249,10 @@ class Agent:
         start_request = time.time()
         if self.user_id is not None:
             self.messages = _compact_telegram_history(self.messages)
+        secret_redirect = _secret_request_redirect(user_input)
+        if secret_redirect:
+            yield {"type": "final_response", "content": secret_redirect}
+            return
         self.messages.append({"role": "user", "content": user_input})
         tool_calls_executed = 0
         tool_call_counts: dict[str, int] = defaultdict(int)
@@ -448,6 +452,9 @@ class Agent:
         start_request = time.time()
         if self.user_id is not None:
             self.messages = _compact_telegram_history(self.messages)
+        secret_redirect = _secret_request_redirect(user_input)
+        if secret_redirect:
+            return secret_redirect
         self.messages.append({"role": "user", "content": user_input})
         tool_calls_executed = 0
         tool_call_counts: dict[str, int] = defaultdict(int)
@@ -720,6 +727,28 @@ def _user_safe_tool_failure(tool_name: str) -> str:
             "Chart support requires `mplfinance` and working market data."
         )
     return "I could not complete that tool request safely."
+
+
+def _secret_request_redirect(user_input: str) -> str | None:
+    lowered = user_input.lower()
+    secret_markers = (
+        "wallet password",
+        "provide your password",
+        "my password is",
+        "seed phrase",
+        "private key",
+        "signing secret",
+        "wallet secret",
+        "secret key",
+        "mnemonic phrase",
+        "recovery phrase",
+    )
+    if any(marker in lowered for marker in secret_markers):
+        return (
+            "Do not send wallet passwords, seed phrases, private keys, or signing secrets in chat. "
+            "Use the secure local TWAK flow to unlock the signer, then retry the on-chain action."
+        )
+    return None
 
 
 def _tool_budget_message() -> str:

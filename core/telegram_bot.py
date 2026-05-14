@@ -1254,6 +1254,20 @@ class TelegramBot:
         if not isinstance(text, str):
             text = str(text)
 
+        lowered = text.lower()
+        if any(
+            marker in lowered
+            for marker in (
+                "please provide your wallet password",
+                "wallet password",
+                "seed phrase",
+                "private key",
+                "signing secret",
+            )
+        ):
+            logger.warning("Blocked secret prompt from Telegram response")
+            return "Wallet signer is locked or unavailable. Please unlock it through the secure local TWAK flow, then retry."
+
         raw_tool_markers = (
             "Tool result from ",
             "[stdout]",

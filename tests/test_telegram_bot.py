@@ -139,6 +139,14 @@ class TestTelegramBot(unittest.IsolatedAsyncioTestCase):
         self.assertIn("could not complete", response)
         self.assertNotIn("[stdout]", response)
 
+    def test_user_safe_agent_response_rewrites_wallet_password_prompt(self):
+        response = self.bot._user_safe_agent_response("Please provide your wallet password to continue.")
+
+        self.assertEqual(
+            response,
+            "Wallet signer is locked or unavailable. Please unlock it through the secure local TWAK flow, then retry.",
+        )
+
     def test_clean_response_strips_gemini_unsigned_tool_markers(self):
         response = self.bot._clean_response(
             "[Tool call recorded without Gemini thought signature: read_strategy]"

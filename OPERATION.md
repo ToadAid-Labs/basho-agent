@@ -132,7 +132,7 @@ Start only the bot: `python3 agent.py bot` (Linux) or `python agent.py bot` (Win
   - **Risk Check**: Run security analysis on any token address before buying.
 
 ### 🛡️ Security Note
-Real on-chain operations (Transfer/Swap) require you to provide your wallet password to the AI Agent during the conversation. This password is only used locally to sign the transaction via the `twak` CLI.
+Real on-chain operations (Transfer/Swap) must use the saved/local TWAK credential flow. Never provide your wallet password, seed phrase, private key, or signing secret to the AI Agent in chat. If the signer is locked, unlock it through the secure local TWAK flow and then retry.
 
 ---
 

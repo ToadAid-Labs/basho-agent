@@ -6,6 +6,7 @@ from core.agent import (
     _build_provider_messages,
     _compact_telegram_history,
     _format_direct_tool_response,
+    _secret_request_redirect,
     _should_disable_tools,
     _should_return_gemini_tool_directly,
 )
@@ -133,6 +134,14 @@ def test_no_tools_prompt_disables_tool_definitions(monkeypatch):
     assert _should_disable_tools("No tools for this one.")
     assert response == "2 + 2 = 4."
     assert fake_client.tool_args == [[]]
+
+
+def test_secret_request_redirect_blocks_wallet_credentials_in_chat():
+    response = _secret_request_redirect("My wallet password is hunter2. Use it for the swap.")
+
+    assert response is not None
+    assert "Do not send wallet passwords" in response
+    assert "secure local TWAK flow" in response
 
 
 def test_agent_stops_interleaved_paper_trade_price_retry_before_budget(monkeypatch):

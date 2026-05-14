@@ -1,6 +1,7 @@
 import json
 import subprocess
 import os
+import re
 from decimal import Decimal, InvalidOperation
 from typing import Dict, Any, Optional, List
 from core.tools import register_tool
@@ -30,6 +31,10 @@ TRACKED_TOKENS = [
         "type": "token",
     },
 ]
+SECURE_TWAK_UNLOCK_MESSAGE = (
+    "Wallet signer is locked or unavailable. Please unlock it through the secure local TWAK flow, then retry."
+)
+TX_HASH_RE = re.compile(r"\b0x[a-fA-F0-9]{64}\b")
 
 def run_twak(args: List[str], timeout: Optional[int] = None) -> str:
     """Run a twak command and return the output."""
@@ -52,6 +57,105 @@ def run_twak(args: List[str], timeout: Optional[int] = None) -> str:
         return f"Error: timed out running {' '.join(cmd)}"
     except Exception as e:
         return f"Exception running twak: {str(e)}"
+
+
+def _looks_like_twak_error(text: str) -> bool:
+    return text.startswith("Error:") or text.startswith("Exception")
+
+
+def _saved_twak_credential_hint_present() -> bool:
+    return bool(os.getenv("TWAK_WALLET_PASSWORD") or os.getenv("TWAK_WALLET_SESSION"))
+
+
+def _is_locked_or_unavailable_message(text: str) -> bool:
+    lowered = str(text).lower()
+    markers = (
+        "wallet signer is locked",
+        "wallet password",
+        "password is required",
+        "private key",
+        "seed phrase",
+        "signing secret",
+        "signer unavailable",
+        "signer is locked",
+        "wallet is locked",
+        "unlock wallet",
+        "unlock it",
+        "credential unavailable",
+        "credentials unavailable",
+        "keychain",
+        "no active wallet session",
+        "no wallet session",
+    )
+    return any(marker in lowered for marker in markers)
+
+
+def _extract_tx_hash(output: str) -> Optional[str]:
+    text = str(output).strip()
+    if not text:
+        return None
+
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        payload = None
+
+    def _search_payload(value: Any) -> Optional[str]:
+        if isinstance(value, dict):
+            for key in ("txHash", "transactionHash", "hash", "txid", "signature"):
+                item = value.get(key)
+                if isinstance(item, str) and item.strip():
+                    match = TX_HASH_RE.search(item)
+                    return match.group(0) if match else item.strip()
+            for nested in value.values():
+                found = _search_payload(nested)
+                if found:
+                    return found
+            return None
+        if isinstance(value, list):
+            for nested in value:
+                found = _search_payload(nested)
+                if found:
+                    return found
+        return None
+
+    payload_hash = _search_payload(payload)
+    if payload_hash:
+        return payload_hash
+
+    match = TX_HASH_RE.search(text)
+    if match:
+        return match.group(0)
+    return None
+
+
+def _signed_execution_preflight() -> Optional[str]:
+    if _saved_twak_credential_hint_present():
+        return None
+
+    status = run_twak(["wallet", "status"])
+    if _looks_like_twak_error(status):
+        return None
+    if _is_locked_or_unavailable_message(status):
+        return SECURE_TWAK_UNLOCK_MESSAGE
+    return None
+
+
+def _run_signed_twak(args: List[str], *, timeout: Optional[int] = None) -> str:
+    preflight_error = _signed_execution_preflight()
+    if preflight_error:
+        return preflight_error
+
+    result = run_twak(args, timeout=timeout)
+    if _is_locked_or_unavailable_message(result):
+        return SECURE_TWAK_UNLOCK_MESSAGE
+    if _looks_like_twak_error(result):
+        return result
+
+    tx_hash = _extract_tx_hash(result)
+    if tx_hash:
+        return f"Verified tx hash: {tx_hash}"
+    return result
 
 
 def _is_nonzero_balance(value: Any) -> bool:
@@ -433,21 +537,18 @@ def get_wallet_status() -> str:
 
 @register_tool(
     name="create_agent_wallet",
-    description="Create a new agent wallet if one doesn't exist. Requires a password.",
+    description="Start secure local TWAK wallet setup guidance. Never request or accept wallet passwords, seed phrases, private keys, or secrets in chat.",
     input_schema={
         "type": "object",
-        "properties": {
-            "password": {
-                "type": "string",
-                "description": "Password to encrypt the wallet keychain.",
-            }
-        },
-        "required": ["password"],
+        "properties": {},
     },
 )
-def create_agent_wallet(password: str) -> str:
-    """Create a new agent wallet."""
-    return run_twak(["wallet", "create", "--password", password])
+def create_agent_wallet() -> str:
+    """Redirect wallet creation to the secure local TWAK flow."""
+    return (
+        "Use the secure local TWAK flow to create or unlock the wallet signer. "
+        "Do not provide wallet passwords, seed phrases, private keys, or signing secrets in chat."
+    )
 
 @register_tool(
     name="get_wallet_addresses",
@@ -483,7 +584,7 @@ def get_wallet_balance(chain: Optional[str] = None) -> str:
 
 @register_tool(
     name="transfer_tokens",
-    description="Transfer tokens from the agent wallet to another address.",
+    description="Transfer tokens from the agent wallet to another address using only saved/local TWAK credentials. Never ask for passwords, seed phrases, private keys, or secrets in chat.",
     input_schema={
         "type": "object",
         "properties": {
@@ -491,21 +592,20 @@ def get_wallet_balance(chain: Optional[str] = None) -> str:
             "to": {"type": "string", "description": "Recipient address."},
             "amount": {"type": "string", "description": "Amount to transfer."},
             "token": {"type": "string", "description": "Token symbol or address (optional, defaults to native token)."},
-            "password": {"type": "string", "description": "Wallet password."},
         },
-        "required": ["chain", "to", "amount", "password"],
+        "required": ["chain", "to", "amount"],
     },
 )
-def transfer_tokens(chain: str, to: str, amount: str, password: str, token: Optional[str] = None) -> str:
+def transfer_tokens(chain: str, to: str, amount: str, token: Optional[str] = None) -> str:
     """Transfer tokens."""
-    args = ["transfer", "--chain", chain, "--to", to, "--amount", amount, "--password", password]
+    args = ["transfer", "--chain", chain, "--to", to, "--amount", amount]
     if token:
         args.extend(["--token", token])
-    return run_twak(args)
+    return _run_signed_twak(args)
 
 @register_tool(
     name="swap_tokens",
-    description="Quote or execute a token swap on a specific chain.",
+    description="Quote or execute a token swap on a specific chain. Execution must use saved/local TWAK credentials only and must never request passwords, seed phrases, private keys, or secrets in chat.",
     input_schema={
         "type": "object",
         "properties": {
@@ -514,14 +614,13 @@ def transfer_tokens(chain: str, to: str, amount: str, password: str, token: Opti
             "from_token": {"type": "string", "description": "Token symbol or address to swap from."},
             "to_token": {"type": "string", "description": "Token symbol or address to swap to."},
             "execute": {"type": "boolean", "description": "If true, execute the swap. If false, only get a quote.", "default": False},
-            "password": {"type": "string", "description": "Wallet password (required if execute is true)."},
             "use_mev_protection": {"type": "boolean", "description": "If true, routes transaction through a private MEV-protecting RPC to prevent front-running.", "default": True},
             "slippage": {"type": "number", "description": "Maximum slippage percentage (e.g. 0.5 for 0.5%). Defaults to environment variable or 1.0.", "default": 0.5},
         },
         "required": ["chain", "amount", "from_token", "to_token"],
     },
 )
-def swap_tokens(chain: str, amount: str, from_token: str, to_token: str, execute: bool = False, password: Optional[str] = None, use_mev_protection: bool = True, slippage: float = 0.5) -> str:
+def swap_tokens(chain: str, amount: str, from_token: str, to_token: str, execute: bool = False, use_mev_protection: bool = True, slippage: float = 0.5) -> str:
     """Swap tokens."""
     # Enforce strict slippage rules for MEV / Arbitrage defense
     if slippage > 2.0:
@@ -536,11 +635,9 @@ def swap_tokens(chain: str, amount: str, from_token: str, to_token: str, execute
     if execute:
         if not mev_enabled:
             return "Error: Transaction blocked by Risk Manager. MEV Protection is strictly required for executing swaps on live mainnet."
-        if not password:
-            return "Error: Password is required to execute a swap."
-        args.extend(["--execute", "--password", password])
+        args.append("--execute")
 
-    result = run_twak(args)
+    result = _run_signed_twak(args) if execute else run_twak(args)
 
     if execute and mev_enabled:
         return f"[MEV Protected via {private_rpc} | Slippage {slippage}%] " + result

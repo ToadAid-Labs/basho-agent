@@ -113,3 +113,66 @@ def test_wallet_portfolio_does_not_mark_absent_before_direct_check(monkeypatch):
 
     assert "No non-zero balances found across the configured portfolio chains." not in result
     assert "DEGEN" in result
+
+
+def test_transfer_uses_saved_local_credential_flow_without_password_prompt(monkeypatch):
+    calls = []
+
+    def _mock_run_twak(args, timeout=None):
+        calls.append(args)
+        if args == ["transfer", "--chain", "base", "--to", "0xabc", "--amount", "1.25"]:
+            return '{"txHash":"0x1111111111111111111111111111111111111111111111111111111111111111"}'
+        raise AssertionError(f"Unexpected twak args: {args}")
+
+    monkeypatch.setattr(trust_wallet, "run_twak", _mock_run_twak)
+    monkeypatch.setenv("TWAK_WALLET_PASSWORD", "stored-locally")
+
+    result = trust_wallet.transfer_tokens("base", "0xabc", "1.25")
+
+    assert "--password" not in calls[0]
+    assert "Verified tx hash: 0x1111111111111111111111111111111111111111111111111111111111111111" == result
+    assert "please provide your wallet password" not in result.lower()
+
+
+def test_locked_signer_redirects_to_secure_local_unlock(monkeypatch):
+    def _mock_run_twak(args, timeout=None):
+        if args == ["wallet", "status"]:
+            return "Wallet signer is locked."
+        raise AssertionError(f"Unexpected twak args: {args}")
+
+    monkeypatch.setattr(trust_wallet, "run_twak", _mock_run_twak)
+    monkeypatch.delenv("TWAK_WALLET_PASSWORD", raising=False)
+    monkeypatch.delenv("TWAK_WALLET_SESSION", raising=False)
+
+    result = trust_wallet.transfer_tokens("base", "0xabc", "1.25")
+
+    assert result == trust_wallet.SECURE_TWAK_UNLOCK_MESSAGE
+
+
+def test_execution_response_rewrites_wallet_password_prompt(monkeypatch):
+    def _mock_run_twak(args, timeout=None):
+        if args == ["swap", "--chain", "base", "10", "ETH", "DEGEN", "--execute"]:
+            return "Error: please provide your wallet password to continue"
+        raise AssertionError(f"Unexpected twak args: {args}")
+
+    monkeypatch.setattr(trust_wallet, "run_twak", _mock_run_twak)
+    monkeypatch.setenv("TWAK_WALLET_PASSWORD", "stored-locally")
+
+    result = trust_wallet.swap_tokens("base", "10", "ETH", "DEGEN", execute=True)
+
+    assert result.endswith(trust_wallet.SECURE_TWAK_UNLOCK_MESSAGE)
+    assert "please provide your wallet password" not in result.lower()
+
+
+def test_successful_swap_execution_reports_verified_tx_hash(monkeypatch):
+    def _mock_run_twak(args, timeout=None):
+        if args == ["swap", "--chain", "base", "10", "ETH", "DEGEN", "--execute"]:
+            return '{"result":{"transactionHash":"0x2222222222222222222222222222222222222222222222222222222222222222"}}'
+        raise AssertionError(f"Unexpected twak args: {args}")
+
+    monkeypatch.setattr(trust_wallet, "run_twak", _mock_run_twak)
+    monkeypatch.setenv("TWAK_WALLET_PASSWORD", "stored-locally")
+
+    result = trust_wallet.swap_tokens("base", "10", "ETH", "DEGEN", execute=True)
+
+    assert "Verified tx hash: 0x2222222222222222222222222222222222222222222222222222222222222222" in result
