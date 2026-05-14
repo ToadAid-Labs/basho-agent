@@ -2,7 +2,7 @@ import json
 import subprocess
 import os
 import re
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 from typing import Dict, Any, Optional, List
 from core.tools import register_tool
 
@@ -175,13 +175,17 @@ def _safe_decimal(value: Any) -> Optional[Decimal]:
     if not text:
         return None
     try:
-        return Decimal(text)
+        with localcontext() as ctx:
+            ctx.prec = 50
+            return Decimal(text)
     except (InvalidOperation, ValueError):
         return None
 
 
 def _format_decimal(value: Decimal) -> str:
-    normalized = format(value.normalize(), "f")
+    with localcontext() as ctx:
+        ctx.prec = 50
+        normalized = format(value.normalize(), "f")
     if "." in normalized:
         normalized = normalized.rstrip("0").rstrip(".")
     return normalized or "0"
@@ -317,7 +321,9 @@ def _extract_direct_token_balance(payload: Any, decimals: int) -> Optional[Decim
     if raw_value is not None:
         payload_decimals = payload.get("decimals")
         divisor_decimals = int(payload_decimals) if str(payload_decimals).isdigit() else decimals
-        return raw_value / (Decimal(10) ** divisor_decimals)
+        with localcontext() as ctx:
+            ctx.prec = 50
+            return raw_value / (Decimal(10) ** divisor_decimals)
 
     return None
 
@@ -426,6 +432,96 @@ def _lookup_tracked_token_rows(selected_chains: List[str], summary_rows: List[Di
         tracked_rows.append(merged_row)
 
     return tracked_rows
+
+
+def _find_tracked_token(symbol: str, chain: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    wanted_symbol = symbol.strip().lower()
+    wanted_chain = chain.strip().lower() if chain else None
+    for token in TRACKED_TOKENS:
+        if token["symbol"].lower() != wanted_symbol:
+            continue
+        if wanted_chain and token["chain"].lower() != wanted_chain:
+            continue
+        return token
+    return None
+
+
+def _get_direct_tracked_token_row(symbol: str, chain: Optional[str] = None) -> Dict[str, Any]:
+    token = _find_tracked_token(symbol, chain)
+    if token is None:
+        available = ", ".join(sorted({t["symbol"] for t in TRACKED_TOKENS}))
+        return {
+            "status": "error",
+            "message": f"Tracked token '{symbol}' is not configured. Available tracked tokens: {available}.",
+        }
+
+    address_map = _resolve_wallet_address_map()
+    wallet_address = address_map.get(token["chain"])
+    if not wallet_address:
+        return {
+            "status": "unknown",
+            "chain": token["chain"],
+            "symbol": token["symbol"],
+            "balance": "unknown",
+            "contract": token["contract"],
+            "asset_id": token["asset_id"],
+        }
+
+    output = run_twak(
+        [
+            "balance",
+            "--chain",
+            token["chain"],
+            "--address",
+            wallet_address,
+            "--token",
+            token["contract"],
+            "--json",
+        ],
+        timeout=int(os.getenv("TWAK_DIRECT_BALANCE_TIMEOUT_SECONDS", "12")),
+    )
+    if _looks_like_twak_error(output):
+        return {
+            "status": "unknown",
+            "chain": token["chain"],
+            "symbol": token["symbol"],
+            "balance": "unknown",
+            "contract": token["contract"],
+            "asset_id": token["asset_id"],
+        }
+
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError:
+        return {
+            "status": "unknown",
+            "chain": token["chain"],
+            "symbol": token["symbol"],
+            "balance": "unknown",
+            "contract": token["contract"],
+            "asset_id": token["asset_id"],
+        }
+
+    balance_value = _extract_direct_token_balance(payload, token["decimals"])
+    if balance_value is None:
+        return {
+            "status": "unknown",
+            "chain": token["chain"],
+            "symbol": token["symbol"],
+            "balance": "unknown",
+            "contract": token["contract"],
+            "asset_id": token["asset_id"],
+        }
+
+    return {
+        "status": "ok",
+        "chain": token["chain"],
+        "symbol": token["symbol"],
+        "balance": _format_decimal(balance_value),
+        "contract": token["contract"],
+        "asset_id": token["asset_id"],
+        "wallet_address": wallet_address,
+    }
 
 
 def _format_portfolio_rows(rows: List[Dict[str, Any]]) -> str:
@@ -580,7 +676,24 @@ def get_wallet_balance(chain: Optional[str] = None) -> str:
     if chain:
         return run_twak(["wallet", "balance", "--chain", chain])
     else:
-        return run_twak(["wallet", "portfolio"])
+        return get_wallet_portfolio()
+
+
+@register_tool(
+    name="get_tracked_token_balance",
+    description="Directly check a tracked token balance from its configured contract. Prefer this first for requests like 'where is my DEGEN?' or before sell/transfer decisions.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "symbol": {"type": "string", "description": "Tracked token symbol, e.g. DEGEN."},
+            "chain": {"type": "string", "description": "Optional chain override, e.g. base."},
+        },
+        "required": ["symbol"],
+    },
+)
+def get_tracked_token_balance(symbol: str, chain: Optional[str] = None) -> str:
+    """Return a direct tracked-token balance lookup."""
+    return json.dumps(_get_direct_tracked_token_row(symbol, chain), indent=2)
 
 @register_tool(
     name="transfer_tokens",

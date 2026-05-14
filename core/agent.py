@@ -30,7 +30,7 @@ SYSTEM_PROMPT = """You are a sophisticated Crypto Trading AI Agent. You have acc
 - Run automated backtests on ML models (run_model_backtest)
 - Track forecasting accuracy (record_price_prediction, evaluate_price_predictions, get_prediction_accuracy, detect_market_regime)
 - Use Trust Wallet market data (trust_search_token, trust_get_token_price, trust_get_swap_quote)
-- Manage an on-chain agent wallet via Trust Wallet Agent Skills (get_wallet_status, create_agent_wallet, get_wallet_addresses, get_wallet_balance, transfer_tokens, swap_tokens, check_onchain_risk)
+- Manage an on-chain agent wallet via Trust Wallet Agent Skills (get_wallet_status, create_agent_wallet, get_wallet_addresses, get_wallet_balance, get_tracked_token_balance, transfer_tokens, swap_tokens, check_onchain_risk)
 - Execute MEV-protected trades using the `swap_tokens` tool with the `use_mev_protection` flag.
 - Perform deep security audits on token contracts (audit_token_contract) to detect rug-pulls and honeypots.
 - Set intelligent background alerts for price, sentiment, whale moves, and wallet activity (set_smart_alert).
@@ -50,6 +50,7 @@ SYSTEM_PROMPT = """You are a sophisticated Crypto Trading AI Agent. You have acc
 
 Use these tools to help the user with crypto trading, portfolio management, and market analysis.
 You can perform both simulated (paper) trading and real on-chain trading, but you must never ask for or accept wallet passwords, seed phrases, private keys, signing secrets, or similar credentials in chat. Real on-chain execution must use only saved/local TWAK credentials. If the signer is locked or unavailable, instruct the user to unlock it through the secure local TWAK flow and retry.
+Stage broad wallet and trading requests. Prefer the smallest useful tool set first, then answer with partial results and explicit deferrals if more checks would exceed the tool budget.
 When executing trades, always consider risk management.
 Be concise, practical, and data-driven. Execute the steps needed, then explain the result clearly."""
 
@@ -69,6 +70,7 @@ TELEGRAM_REPEAT_LIMITED_TOOLS = {
 DEFAULT_TELEGRAM_MAX_REPEAT_PER_TOOL = 2
 DEFAULT_TELEGRAM_MAX_SEARCH_LIKE_CALLS = 4
 TELEGRAM_REPEAT_GUARD_TOOL_NAME = "telegram_search_guard"
+TOOL_PLAN_GUARD_TOOL_NAME = "tool_plan_guard"
 
 ROLES = {
     "researcher": {
@@ -89,7 +91,7 @@ ROLES = {
         "allowed_tools": [
             "calculate_position_size", "execute_paper_trade", "create_paper_trading_account",
             "get_portfolio_status", "get_trade_history", "get_wallet_status", "create_agent_wallet",
-            "get_wallet_addresses", "get_wallet_balance", "transfer_tokens", "swap_tokens", "trust_get_swap_quote",
+            "get_wallet_addresses", "get_wallet_balance", "get_tracked_token_balance", "transfer_tokens", "swap_tokens", "trust_get_swap_quote",
             "rebalance_portfolio", "copy_trade_wallet", "verify_with_council", "audit_strategy_performance",
             "check_background_processes"
         ]
@@ -204,6 +206,9 @@ class Agent:
                 "\n- Telegram requests have a strict tool-call budget. Use the fewest tools that can answer the request."
                 "\n- Prefer composite tools over manual fan-out. For entry analysis, prefer `trade_decision_engine` instead of chaining `get_pro_indicators`, `get_multi_timeframe_signal`, `get_swing_setup`, and `analyze_market_structure` separately."
                 "\n- For requests like 'market report', 'daily market update', or 'market overview', prefer `market_report` instead of chaining search/news/indicator tools manually."
+                "\n- For wallet status, prefer `get_wallet_balance` first. For tracked token questions like DEGEN position, prefer `get_tracked_token_balance` first."
+                "\n- For sell/transfer intents, check direct token balance first, then quote or execution-prep tools. Do not branch into history, alerts, or broad market scans unless the user explicitly asks."
+                "\n- For watch-price, buy-back, or opportunity-monitoring requests on one token, check price first, then use at most one compact setup/decision tool. Do not fan out into `market_report`, whale scans, smart-money scans, and multiple structure tools in the same turn."
                 "\n- Do not call the same lookup tool repeatedly for the same symbol unless the user provides new constraints."
                 "\n- For broad opportunity searches, screen at most 2-3 symbols first, then deepen only on the strongest candidate."
             )
@@ -261,6 +266,8 @@ class Agent:
         retryable_failure_signatures: set[str] = set()
         executed_paper_trade_signatures: set[str] = set()
         telegram_repeat_guard_active = False
+        request_tool_plan = _build_request_tool_plan(user_input)
+        budget_guard_active = False
 
         final_text = ""
         tools_for_request = [] if _should_disable_tools(user_input) else self.tool_definitions
@@ -351,10 +358,56 @@ class Agent:
                         )
                         continue
 
+                    plan_guard = _tool_plan_guard_message(
+                        request_tool_plan,
+                        tool_name,
+                        tool_calls_executed,
+                    )
+                    if plan_guard:
+                        assistant_content.append(
+                            {
+                                "type": "tool_use",
+                                "id": tool_use_id,
+                                "name": TOOL_PLAN_GUARD_TOOL_NAME,
+                                "input": {"blocked_tool": tool_name},
+                                "thought_signature": thought_signature,
+                            }
+                        )
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tool_use_id,
+                                "name": TOOL_PLAN_GUARD_TOOL_NAME,
+                                "content": plan_guard,
+                            }
+                        )
+                        continue
+
                     if self.max_tool_calls and tool_calls_executed >= self.max_tool_calls:
-                        final_text = _tool_budget_message()
-                        yield {"type": "final_response", "content": final_text}
-                        return
+                        budget_guard = _tool_budget_guard_result(
+                            request_tool_plan,
+                            cached_tool_results,
+                            tool_name,
+                        )
+                        budget_guard_active = True
+                        assistant_content.append(
+                            {
+                                "type": "tool_use",
+                                "id": tool_use_id,
+                                "name": TOOL_PLAN_GUARD_TOOL_NAME,
+                                "input": {"blocked_tool": tool_name},
+                                "thought_signature": thought_signature,
+                            }
+                        )
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tool_use_id,
+                                "name": TOOL_PLAN_GUARD_TOOL_NAME,
+                                "content": budget_guard,
+                            }
+                        )
+                        break
                     if self.user_id is not None:
                         repeat_guard = _telegram_tool_repeat_guard(
                             tool_name,
@@ -444,6 +497,8 @@ class Agent:
                 return
 
             self.messages.append({"role": "user", "content": tool_results})
+            if budget_guard_active:
+                tools_for_request = []
 
         yield {"type": "error", "content": "Error: tool loop exceeded maximum iterations."}
 
@@ -463,6 +518,8 @@ class Agent:
         retryable_failure_signatures: set[str] = set()
         executed_paper_trade_signatures: set[str] = set()
         telegram_repeat_guard_active = False
+        request_tool_plan = _build_request_tool_plan(user_input)
+        budget_guard_active = False
 
         final_text = ""
         tools_for_request = [] if _should_disable_tools(user_input) else self.tool_definitions
@@ -527,8 +584,56 @@ class Agent:
                         )
                         continue
 
+                    plan_guard = _tool_plan_guard_message(
+                        request_tool_plan,
+                        tool_name,
+                        tool_calls_executed,
+                    )
+                    if plan_guard:
+                        assistant_content.append(
+                            {
+                                "type": "tool_use",
+                                "id": tool_use_id,
+                                "name": TOOL_PLAN_GUARD_TOOL_NAME,
+                                "input": {"blocked_tool": tool_name},
+                                "thought_signature": thought_signature
+                            }
+                        )
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tool_use_id,
+                                "name": TOOL_PLAN_GUARD_TOOL_NAME,
+                                "content": plan_guard,
+                            }
+                        )
+                        continue
+
                     if self.max_tool_calls and tool_calls_executed >= self.max_tool_calls:
-                        return _tool_budget_message()
+                        budget_guard = _tool_budget_guard_result(
+                            request_tool_plan,
+                            cached_tool_results,
+                            tool_name,
+                        )
+                        budget_guard_active = True
+                        assistant_content.append(
+                            {
+                                "type": "tool_use",
+                                "id": tool_use_id,
+                                "name": TOOL_PLAN_GUARD_TOOL_NAME,
+                                "input": {"blocked_tool": tool_name},
+                                "thought_signature": thought_signature
+                            }
+                        )
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tool_use_id,
+                                "name": TOOL_PLAN_GUARD_TOOL_NAME,
+                                "content": budget_guard,
+                            }
+                        )
+                        break
                     if self.user_id is not None:
                         repeat_guard = _telegram_tool_repeat_guard(
                             tool_name,
@@ -610,6 +715,8 @@ class Agent:
                 return final_text
 
             self.messages.append({"role": "user", "content": tool_results})
+            if budget_guard_active:
+                tools_for_request = []
 
         return "Error: tool loop exceeded maximum iterations."
 
@@ -751,10 +858,133 @@ def _secret_request_redirect(user_input: str) -> str | None:
     return None
 
 
+def _build_request_tool_plan(user_input: str) -> dict[str, Any]:
+    lowered = user_input.lower()
+
+    reentry_markers = ("buy back", "buyback", "watch", "come down", "opportunity")
+    if "degen" in lowered and any(marker in lowered for marker in reentry_markers):
+        return {
+            "mode": "tracked_token_reentry_watch",
+            "focus": "token price first, then one compact re-entry check",
+            "stages": [
+                {"trust_get_token_price"},
+                {"trade_decision_engine", "get_swing_setup"},
+            ],
+            "deferred": ["market report", "whale scan", "smart money scan", "manual structure/indicator fanout", "alerts"],
+        }
+
+    if any(phrase in lowered for phrase in ("sell remaining", "swap remaining", "transfer remaining")) and "degen" in lowered:
+        return {
+            "mode": "sell_remaining_tracked",
+            "focus": "direct tracked-token balance and execution prep",
+            "stages": [
+                {"get_tracked_token_balance"},
+                {"trust_get_swap_quote", "swap_tokens", "transfer_tokens"},
+            ],
+            "deferred": ["wallet summary", "recent history", "alerts", "risk/market scan"],
+        }
+
+    if "should i sell" in lowered:
+        return {
+            "mode": "sell_decision",
+            "focus": "direct token balance and price",
+            "stages": [
+                {"get_tracked_token_balance"},
+                {"trust_get_token_price"},
+            ],
+            "deferred": ["recent history", "alerts", "risk/market scan"],
+        }
+
+    if "degen" in lowered and any(phrase in lowered for phrase in ("where is", "balance", "position", "holdings")):
+        return {
+            "mode": "tracked_token_position",
+            "focus": "direct tracked-token balance",
+            "stages": [
+                {"get_tracked_token_balance"},
+                {"trust_get_token_price"},
+            ],
+            "deferred": ["wallet-wide portfolio scan", "recent history", "alerts", "risk/market scan"],
+        }
+
+    if any(word in lowered for word in ("wallet", "portfolio")):
+        return {
+            "mode": "wallet_status",
+            "focus": "wallet summary and tracked balances",
+            "stages": [
+                {"get_wallet_balance"},
+                {"get_tracked_token_balance"},
+            ],
+            "deferred": ["price lookup", "recent history", "alerts", "risk/market scan"],
+        }
+
+    return {
+        "mode": "default",
+        "focus": "",
+        "stages": [],
+        "deferred": [],
+    }
+
+
+def _tool_plan_guard_message(
+    request_tool_plan: dict[str, Any],
+    tool_name: str,
+    tool_calls_executed: int,
+) -> str | None:
+    stages = request_tool_plan.get("stages") or []
+    if not stages:
+        return None
+
+    stage_index = min(tool_calls_executed, len(stages) - 1)
+    allowed_tools = stages[stage_index]
+    if tool_name in allowed_tools:
+        return None
+
+    deferred = ", ".join(request_tool_plan.get("deferred") or [])
+    focus = request_tool_plan.get("focus") or "the most important checks"
+    deferred_suffix = f" Deferred for now: {deferred}." if deferred else ""
+    return (
+        f"Staged execution planner deferred `{tool_name}`. "
+        f"Focus first on {focus}.{deferred_suffix} "
+        "Use results already gathered, or call the next highest-priority tool instead."
+    )
+
+
+def _tool_budget_guard_result(
+    request_tool_plan: dict[str, Any],
+    cached_tool_results: dict[str, str],
+    blocked_tool: str,
+) -> str:
+    executed_tools = []
+    for signature in cached_tool_results:
+        try:
+            payload = json.loads(signature)
+        except json.JSONDecodeError:
+            continue
+        name = payload.get("name")
+        if name and name not in executed_tools:
+            executed_tools.append(name)
+
+    if not executed_tools:
+        return _tool_budget_message()
+
+    focus = request_tool_plan.get("focus") or "the most important pieces"
+    deferred = list(request_tool_plan.get("deferred") or [])
+    if blocked_tool not in executed_tools and blocked_tool not in deferred:
+        deferred.insert(0, blocked_tool)
+    deferred_text = ", ".join(deferred) if deferred else blocked_tool
+    executed_text = ", ".join(executed_tools)
+    return (
+        f"Tool budget reached after checking {focus}. "
+        f"Completed first: {executed_text}. "
+        f"Deferred: {deferred_text}. "
+        "Answer with the partial results already gathered instead of calling more tools."
+    )
+
+
 def _tool_budget_message() -> str:
     return (
-        "I stopped because this request tried to use too many tools at once. "
-        "Please ask a narrower question."
+        "I could not complete the full request within the tool budget. "
+        "Use the partial results already gathered, then note what was deferred."
     )
 
 

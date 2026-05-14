@@ -595,17 +595,23 @@ class PaperTradingEngine:
         Returns:
             PaperTradingAccount instance
         """
-        if user_id not in self.accounts:
+        default_initial_balance = 10000.00
+        should_reset = initial_balance != default_initial_balance
+
+        if user_id in self.accounts and not should_reset:
+            return self.accounts[user_id]
+
+        if user_id not in self.accounts and not should_reset:
             restored = self._load_account_from_database(user_id)
             if restored is not None:
                 return restored
 
-            account = PaperTradingAccount(user_id, initial_balance)
-            self.accounts[user_id] = account
-            self.initial_balances[user_id] = initial_balance
-            self._persist_account_snapshot(account)
-            print(f"Created paper trading account for user {user_id} with ${initial_balance}")
-        return self.accounts[user_id]
+        account = PaperTradingAccount(user_id, initial_balance)
+        self.accounts[user_id] = account
+        self.initial_balances[user_id] = initial_balance
+        self._persist_account_snapshot(account)
+        print(f"Created paper trading account for user {user_id} with ${initial_balance}")
+        return account
 
     def get_account(self, user_id: int) -> Optional[PaperTradingAccount]:
         """

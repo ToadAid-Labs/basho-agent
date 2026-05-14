@@ -4,9 +4,12 @@ from core import agent as agent_module
 from core.agent import Agent, _telegram_tool_guard_result, _telegram_tool_repeat_guard
 from core.agent import (
     _build_provider_messages,
+    _build_request_tool_plan,
     _compact_telegram_history,
     _format_direct_tool_response,
     _secret_request_redirect,
+    _tool_budget_guard_result,
+    _tool_plan_guard_message,
     _should_disable_tools,
     _should_return_gemini_tool_directly,
 )
@@ -142,6 +145,37 @@ def test_secret_request_redirect_blocks_wallet_credentials_in_chat():
     assert response is not None
     assert "Do not send wallet passwords" in response
     assert "secure local TWAK flow" in response
+
+
+def test_request_tool_plan_prefers_direct_tracked_balance_for_degen_position():
+    plan = _build_request_tool_plan("where is my DEGEN?")
+
+    assert plan["mode"] == "tracked_token_position"
+    assert plan["stages"][0] == {"get_tracked_token_balance"}
+
+
+def test_tool_plan_guard_defers_unrelated_scan_for_sell_remaining():
+    plan = _build_request_tool_plan("sell remaining DEGEN")
+
+    message = _tool_plan_guard_message(plan, "check_onchain_risk", tool_calls_executed=0)
+
+    assert message is not None
+    assert "deferred `check_onchain_risk`" in message
+    assert "direct tracked-token balance and execution prep" in message
+
+
+def test_tool_budget_guard_result_describes_partial_results():
+    plan = _build_request_tool_plan("check my wallet")
+    cached = {
+        '{"input": {}, "name": "get_wallet_balance"}': "wallet summary",
+        '{"input": {"symbol": "DEGEN"}, "name": "get_tracked_token_balance"}': "degen balance",
+    }
+
+    message = _tool_budget_guard_result(plan, cached, "list_alerts")
+
+    assert "Completed first: get_wallet_balance, get_tracked_token_balance" in message
+    assert "Deferred:" in message
+    assert "alerts" in message or "list_alerts" in message
 
 
 def test_agent_stops_interleaved_paper_trade_price_retry_before_budget(monkeypatch):
@@ -318,6 +352,204 @@ def test_agent_reuses_duplicate_tool_results_without_spending_budget(monkeypatch
     assert executed == [
         ("get_pro_indicators", {"symbol": "BTC"}),
         ("get_multi_timeframe_signal", {"symbol": "BTC"}),
+    ]
+
+
+def test_broad_wallet_status_returns_partial_results_instead_of_hard_stop(monkeypatch):
+    class FakeClient:
+        model = "fake"
+
+        def __init__(self):
+            self.calls = 0
+            self.tools_seen = []
+
+        def create_message(self, **kwargs):
+            self.tools_seen.append(kwargs["tools"])
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(
+                    content=[
+                        SimpleNamespace(type="tool_use", name="get_wallet_balance", input={}, id="tool-1")
+                    ]
+                )
+            if self.calls == 2:
+                return SimpleNamespace(
+                    content=[
+                        SimpleNamespace(
+                            type="text",
+                            text="I checked the most important pieces first: wallet summary. I deferred price lookup, recent history, alerts, and risk/market scan to avoid over-running the tool budget.",
+                        )
+                    ]
+                )
+            raise AssertionError("Unexpected extra LLM call")
+
+    fake_client = FakeClient()
+
+    monkeypatch.setattr(agent_module, "create_client", lambda provider: fake_client)
+    monkeypatch.setattr(agent_module, "get_tool_definitions", lambda: [{"name": "get_wallet_balance"}])
+    monkeypatch.setattr(agent_module, "latest_summary", lambda sid: None)
+    monkeypatch.setattr(agent_module, "save_session_for_provider", lambda *args, **kwargs: None)
+    monkeypatch.setattr(agent_module, "execute_tool", lambda name, raw_input: "wallet summary")
+    monkeypatch.setenv("AGENT_MAX_TOOL_CALLS", "1")
+
+    agent = Agent(provider=ModelProvider.ANTHROPIC, sid="test", history=[])
+
+    response = agent.chat("analyze BTC")
+
+    assert "I checked the most important pieces first" in response
+    assert "too many tools at once" not in response
+
+
+def test_agent_returns_partial_results_when_tool_budget_is_exceeded(monkeypatch):
+    class FakeClient:
+        model = "fake"
+
+        def __init__(self):
+            self.calls = 0
+            self.tools_seen = []
+
+        def create_message(self, **kwargs):
+            self.tools_seen.append(kwargs["tools"])
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(
+                    content=[SimpleNamespace(type="tool_use", name="get_pro_indicators", input={"symbol": "BTC"}, id="tool-1")]
+                )
+            if self.calls == 2:
+                return SimpleNamespace(
+                    content=[SimpleNamespace(type="tool_use", name="get_multi_timeframe_signal", input={"symbol": "BTC"}, id="tool-2")]
+                )
+            if self.calls == 3:
+                return SimpleNamespace(
+                    content=[SimpleNamespace(type="tool_use", name="analyze_market_structure", input={"symbol": "BTC"}, id="tool-3")]
+                )
+            if self.calls == 4:
+                return SimpleNamespace(
+                    content=[
+                        SimpleNamespace(
+                            type="text",
+                            text="I checked the most important pieces first: indicators and multi-timeframe trend. I deferred market structure to avoid over-running the tool budget.",
+                        )
+                    ]
+                )
+            raise AssertionError("Unexpected extra LLM call")
+
+    fake_client = FakeClient()
+    executed = []
+
+    monkeypatch.setattr(agent_module, "create_client", lambda provider: fake_client)
+    monkeypatch.setattr(
+        agent_module,
+        "get_tool_definitions",
+        lambda: [{"name": "get_pro_indicators"}, {"name": "get_multi_timeframe_signal"}, {"name": "analyze_market_structure"}],
+    )
+    monkeypatch.setattr(agent_module, "latest_summary", lambda sid: None)
+    monkeypatch.setattr(agent_module, "save_session_for_provider", lambda *args, **kwargs: None)
+    monkeypatch.setenv("AGENT_MAX_TOOL_CALLS", "2")
+
+    def fake_execute_tool(name, raw_input):
+        executed.append((name, raw_input))
+        return f"result {name}"
+
+    monkeypatch.setattr(agent_module, "execute_tool", fake_execute_tool)
+
+    agent = Agent(provider=ModelProvider.ANTHROPIC, sid="test", history=[])
+
+    response = agent.chat("analyze BTC")
+
+    assert "I checked the most important pieces first" in response
+    assert "too many tools at once" not in response
+    assert executed == [
+        ("get_pro_indicators", {"symbol": "BTC"}),
+        ("get_multi_timeframe_signal", {"symbol": "BTC"}),
+    ]
+    assert fake_client.tools_seen[-1] == []
+
+
+def test_degen_position_flow_blocks_full_market_scan_before_direct_balance(monkeypatch):
+    class FakeClient:
+        model = "fake"
+
+        def __init__(self):
+            self.calls = 0
+
+        def create_message(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(
+                    content=[
+                        SimpleNamespace(type="tool_use", name="trust_get_token_price", input={"token_symbol": "DEGEN", "chain": "base"}, id="tool-1")
+                    ]
+                )
+            return SimpleNamespace(
+                content=[
+                    SimpleNamespace(type="text", text="I checked DEGEN directly first and deferred broader scans.")
+                ]
+            )
+
+    fake_client = FakeClient()
+    executed = []
+
+    monkeypatch.setattr(agent_module, "create_client", lambda provider: fake_client)
+    monkeypatch.setattr(agent_module, "get_tool_definitions", lambda: [{"name": "trust_get_token_price"}, {"name": "get_tracked_token_balance"}])
+    monkeypatch.setattr(agent_module, "latest_summary", lambda sid: None)
+    monkeypatch.setattr(agent_module, "save_session_for_provider", lambda *args, **kwargs: None)
+    monkeypatch.setattr(agent_module, "execute_tool", lambda name, raw_input: executed.append((name, raw_input)) or "ok")
+
+    agent = Agent(provider=ModelProvider.ANTHROPIC, sid="test", history=[])
+
+    response = agent.chat("where is my DEGEN?")
+
+    assert response == "I checked DEGEN directly first and deferred broader scans."
+    assert executed == []
+
+
+def test_sell_remaining_degen_does_not_trigger_unrelated_market_scans(monkeypatch):
+    class FakeClient:
+        model = "fake"
+        sequence = [
+            ("get_tracked_token_balance", {"symbol": "DEGEN", "chain": "base"}),
+            ("trust_get_swap_quote", {"from_token": "DEGEN", "to_token": "ETH", "amount": "100", "chain": "base"}),
+            ("check_onchain_risk", {"asset_id": "DEGEN", "chain": "base"}),
+            None,
+        ]
+
+        def __init__(self):
+            self.calls = 0
+
+        def create_message(self, **kwargs):
+            item = self.sequence[self.calls]
+            self.calls += 1
+            if item is None:
+                return SimpleNamespace(
+                    content=[SimpleNamespace(type="text", text="I checked the DEGEN balance and quote first, and deferred extra scans.")]
+                )
+            tool_name, tool_input = item
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="tool_use", name=tool_name, input=tool_input, id=f"tool-{self.calls}")]
+            )
+
+    fake_client = FakeClient()
+    executed = []
+
+    monkeypatch.setattr(agent_module, "create_client", lambda provider: fake_client)
+    monkeypatch.setattr(
+        agent_module,
+        "get_tool_definitions",
+        lambda: [{"name": "get_tracked_token_balance"}, {"name": "trust_get_swap_quote"}, {"name": "check_onchain_risk"}],
+    )
+    monkeypatch.setattr(agent_module, "latest_summary", lambda sid: None)
+    monkeypatch.setattr(agent_module, "save_session_for_provider", lambda *args, **kwargs: None)
+    monkeypatch.setattr(agent_module, "execute_tool", lambda name, raw_input: executed.append((name, raw_input)) or f"result {name}")
+
+    agent = Agent(provider=ModelProvider.ANTHROPIC, sid="test", history=[])
+
+    response = agent.chat("sell remaining DEGEN")
+
+    assert "deferred extra scans" in response
+    assert executed == [
+        ("get_tracked_token_balance", {"symbol": "DEGEN", "chain": "base"}),
+        ("trust_get_swap_quote", {"from_token": "DEGEN", "to_token": "ETH", "amount": "100", "chain": "base"}),
     ]
 
 

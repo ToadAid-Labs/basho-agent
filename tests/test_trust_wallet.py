@@ -115,6 +115,27 @@ def test_wallet_portfolio_does_not_mark_absent_before_direct_check(monkeypatch):
     assert "DEGEN" in result
 
 
+def test_get_wallet_balance_without_chain_uses_tracked_portfolio_view(monkeypatch):
+    monkeypatch.setattr(trust_wallet, "get_wallet_portfolio", lambda chains=None: "tracked portfolio view")
+
+    result = trust_wallet.get_wallet_balance()
+
+    assert result == "tracked portfolio view"
+
+
+def test_get_tracked_token_balance_returns_direct_lookup(monkeypatch):
+    monkeypatch.setattr(
+        trust_wallet,
+        "_get_direct_tracked_token_row",
+        lambda symbol, chain=None: {"status": "ok", "symbol": symbol, "chain": chain or "base", "balance": "12.5"},
+    )
+
+    result = trust_wallet.get_tracked_token_balance("DEGEN", "base")
+
+    assert '"symbol": "DEGEN"' in result
+    assert '"balance": "12.5"' in result
+
+
 def test_transfer_uses_saved_local_credential_flow_without_password_prompt(monkeypatch):
     calls = []
 
