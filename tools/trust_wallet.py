@@ -1,6 +1,7 @@
 import json
 import subprocess
 import os
+from decimal import Decimal, InvalidOperation
 from typing import Dict, Any, Optional, List
 from core.tools import register_tool
 
@@ -18,6 +19,16 @@ DEFAULT_TELEGRAM_PORTFOLIO_CHAINS = [
     "base",
     "ethereum",
     "arbitrum",
+]
+TRACKED_TOKENS = [
+    {
+        "chain": "base",
+        "symbol": "DEGEN",
+        "contract": "0x4ed4e862860beD51a9570b96d89aF5E1B0Efefed",
+        "asset_id": "c8453_t0x4ed4E862860beD51a9570b96d89aF5E1B0Efefed",
+        "decimals": 18,
+        "type": "token",
+    },
 ]
 
 def run_twak(args: List[str], timeout: Optional[int] = None) -> str:
@@ -53,6 +64,266 @@ def _is_nonzero_balance(value: Any) -> bool:
         return any(ch != "0" for ch in text if ch.isdigit())
 
 
+def _safe_decimal(value: Any) -> Optional[Decimal]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return Decimal(text)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _format_decimal(value: Decimal) -> str:
+    normalized = format(value.normalize(), "f")
+    if "." in normalized:
+        normalized = normalized.rstrip("0").rstrip(".")
+    return normalized or "0"
+
+
+def _extract_wallet_address_cards(output: str) -> List[Dict[str, str]]:
+    cards: List[Dict[str, str]] = []
+    current_lines: List[str] = []
+    in_box = False
+
+    for line in output.splitlines():
+        if line.startswith("╭"):
+            current_lines = []
+            in_box = True
+            continue
+        if line.startswith("╰") and in_box:
+            chains_parts: List[str] = []
+            address = ""
+            collecting_chains = False
+            for card_line in current_lines:
+                stripped = card_line.strip()
+                if not stripped:
+                    continue
+                if stripped.startswith("Chains"):
+                    collecting_chains = True
+                    chains_parts.append(stripped.removeprefix("Chains").strip())
+                    continue
+                if stripped.startswith("Address"):
+                    collecting_chains = False
+                    address = stripped.removeprefix("Address").strip()
+                    continue
+                if collecting_chains:
+                    chains_parts.append(stripped)
+            if address:
+                cards.append(
+                    {
+                        "chains": " ".join(part for part in chains_parts if part).lower(),
+                        "address": address,
+                    }
+                )
+            current_lines = []
+            in_box = False
+            continue
+        if in_box and "│" in line:
+            first = line.find("│")
+            last = line.rfind("│")
+            if first != last:
+                current_lines.append(line[first + 1:last].rstrip())
+
+    return cards
+
+
+def _resolve_wallet_address_map() -> Dict[str, str]:
+    output = run_twak(["wallet", "addresses"])
+    if output.startswith("Error:") or output.startswith("Exception"):
+        return {}
+
+    address_map: Dict[str, str] = {}
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError:
+        payload = None
+
+    if isinstance(payload, list):
+        for entry in payload:
+            if not isinstance(entry, dict):
+                continue
+            address = str(entry.get("address") or "").strip()
+            if not address:
+                continue
+            chains_value = entry.get("chains") or entry.get("chain") or []
+            if isinstance(chains_value, str):
+                chains = [chains_value]
+            else:
+                chains = list(chains_value)
+            for chain in chains:
+                address_map[str(chain).lower()] = address
+
+    if address_map:
+        return address_map
+
+    for card in _extract_wallet_address_cards(output):
+        address = card["address"]
+        for chain in card["chains"].split():
+            cleaned = chain.strip(",").lower()
+            if cleaned:
+                address_map[cleaned] = address
+    return address_map
+
+
+def _find_matching_row(rows: List[Dict[str, Any]], token: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    token_chain = str(token["chain"]).lower()
+    token_symbol = str(token["symbol"]).lower()
+    token_contract = str(token["contract"]).lower()
+    token_asset_id = str(token["asset_id"]).lower()
+
+    for row in rows:
+        if str(row.get("chain", "")).lower() != token_chain:
+            continue
+        row_symbol = str(row.get("symbol", "")).lower()
+        row_contract = str(
+            row.get("contract")
+            or row.get("contractAddress")
+            or row.get("tokenAddress")
+            or ""
+        ).lower()
+        row_asset_id = str(row.get("assetId") or row.get("asset_id") or "").lower()
+        if row_contract and row_contract == token_contract:
+            return row
+        if row_asset_id and row_asset_id == token_asset_id:
+            return row
+        if row_symbol and row_symbol == token_symbol:
+            return row
+    return None
+
+
+def _extract_direct_token_balance(payload: Any, decimals: int) -> Optional[Decimal]:
+    if isinstance(payload, list):
+        for entry in payload:
+            balance = _extract_direct_token_balance(entry, decimals)
+            if balance is not None:
+                return balance
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    for key in ("balance", "formattedBalance", "uiAmount", "amount"):
+        value = _safe_decimal(payload.get(key))
+        if value is not None:
+            return value
+
+    raw_value = _safe_decimal(payload.get("rawBalance") or payload.get("value"))
+    if raw_value is not None:
+        payload_decimals = payload.get("decimals")
+        divisor_decimals = int(payload_decimals) if str(payload_decimals).isdigit() else decimals
+        return raw_value / (Decimal(10) ** divisor_decimals)
+
+    return None
+
+
+def _lookup_tracked_token_rows(selected_chains: List[str], summary_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    tracked_tokens = [token for token in TRACKED_TOKENS if token["chain"] in selected_chains]
+    if not tracked_tokens:
+        return []
+
+    address_map = _resolve_wallet_address_map()
+    direct_timeout = int(os.getenv("TWAK_DIRECT_BALANCE_TIMEOUT_SECONDS", "12"))
+    tracked_rows: List[Dict[str, Any]] = []
+
+    for token in tracked_tokens:
+        summary_row = _find_matching_row(summary_rows, token)
+        address = address_map.get(token["chain"])
+        if not address:
+            if summary_row is None:
+                tracked_rows.append(
+                    {
+                        "chain": token["chain"],
+                        "type": token.get("type", "token"),
+                        "symbol": token["symbol"],
+                        "balance": "unknown",
+                        "usdValue": None,
+                        "assetId": token["asset_id"],
+                        "contractAddress": token["contract"],
+                    }
+                )
+            continue
+
+        output = run_twak(
+            [
+                "balance",
+                "--chain",
+                token["chain"],
+                "--address",
+                address,
+                "--token",
+                token["contract"],
+                "--json",
+            ],
+            timeout=direct_timeout,
+        )
+        if output.startswith("Error:") or output.startswith("Exception"):
+            if summary_row is None:
+                tracked_rows.append(
+                    {
+                        "chain": token["chain"],
+                        "type": token.get("type", "token"),
+                        "symbol": token["symbol"],
+                        "balance": "unknown",
+                        "usdValue": None,
+                        "assetId": token["asset_id"],
+                        "contractAddress": token["contract"],
+                    }
+                )
+            continue
+
+        try:
+            payload = json.loads(output)
+        except json.JSONDecodeError:
+            if summary_row is None:
+                tracked_rows.append(
+                    {
+                        "chain": token["chain"],
+                        "type": token.get("type", "token"),
+                        "symbol": token["symbol"],
+                        "balance": "unknown",
+                        "usdValue": None,
+                        "assetId": token["asset_id"],
+                        "contractAddress": token["contract"],
+                    }
+                )
+            continue
+
+        balance_value = _extract_direct_token_balance(payload, token["decimals"])
+        if balance_value is None:
+            if summary_row is None:
+                tracked_rows.append(
+                    {
+                        "chain": token["chain"],
+                        "type": token.get("type", "token"),
+                        "symbol": token["symbol"],
+                        "balance": "unknown",
+                        "usdValue": None,
+                        "assetId": token["asset_id"],
+                        "contractAddress": token["contract"],
+                    }
+                )
+            continue
+
+        merged_row = dict(summary_row or {})
+        merged_row.update(
+            {
+                "chain": token["chain"],
+                "type": merged_row.get("type") or token.get("type", "token"),
+                "symbol": token["symbol"],
+                "balance": _format_decimal(balance_value),
+                "assetId": token["asset_id"],
+                "contractAddress": token["contract"],
+            }
+        )
+        if "usdValue" not in merged_row:
+            merged_row["usdValue"] = None
+        tracked_rows.append(merged_row)
+
+    return tracked_rows
+
+
 def _format_portfolio_rows(rows: List[Dict[str, Any]]) -> str:
     if not rows:
         return "No non-zero balances found across the configured portfolio chains."
@@ -62,15 +333,22 @@ def _format_portfolio_rows(rows: List[Dict[str, Any]]) -> str:
     total_usd = 0.0
 
     for row in rows:
-        usd_value = float(row.get("usdValue") or 0)
-        total_usd += usd_value
+        usd_raw = row.get("usdValue")
+        usd_decimal = _safe_decimal(usd_raw)
+        if usd_decimal is not None:
+            total_usd += float(usd_decimal)
+            usd_display = f"${float(usd_decimal):,.2f}"
+        elif usd_raw in (None, ""):
+            usd_display = "Unknown"
+        else:
+            usd_display = str(usd_raw)
         formatted_rows.append(
             (
                 str(row.get("chain", "")),
                 str(row.get("type", "")),
                 str(row.get("symbol", "")),
                 str(row.get("balance", "")),
-                f"${usd_value:,.2f}",
+                usd_display,
             )
         )
 
@@ -112,8 +390,26 @@ def get_wallet_portfolio(chains: Optional[List[str]] = None) -> str:
             if _is_nonzero_balance(row.get("balance")) or float(row.get("usdValue") or 0) > 0:
                 rows.append(row)
 
-    if rows:
-        return _format_portfolio_rows(rows)
+    merged_rows: List[Dict[str, Any]] = []
+    tracked_keys = {
+        (
+            str(token["chain"]).lower(),
+            str(token["asset_id"]).lower(),
+        )
+        for token in TRACKED_TOKENS
+        if token["chain"] in selected_chains
+    }
+    for row in rows:
+        row_chain = str(row.get("chain", "")).lower()
+        row_asset_id = str(row.get("assetId") or row.get("asset_id") or "").lower()
+        if (row_chain, row_asset_id) in tracked_keys:
+            continue
+        merged_rows.append(row)
+
+    merged_rows.extend(_lookup_tracked_token_rows(selected_chains, rows))
+
+    if merged_rows:
+        return _format_portfolio_rows(merged_rows)
     if errors:
         return " | ".join(errors)
     return run_twak(["wallet", "portfolio"])
