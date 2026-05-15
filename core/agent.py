@@ -9,6 +9,7 @@ from typing import Any, Generator
 from rich.console import Console
 
 from core.provider import ModelProvider, create_client, get_provider
+from core.tool_policy import build_intent_tool_policy, is_live_execution_tool
 from core.tools import execute_tool, get_tool_definitions
 from memory.store import latest_summary, load_last_session_for_provider, new_session, save_session_for_provider
 
@@ -362,6 +363,7 @@ class Agent:
                         request_tool_plan,
                         tool_name,
                         tool_calls_executed,
+                        tool_input,
                     )
                     if plan_guard:
                         assistant_content.append(
@@ -588,6 +590,7 @@ class Agent:
                         request_tool_plan,
                         tool_name,
                         tool_calls_executed,
+                        tool_input,
                     )
                     if plan_guard:
                         assistant_content.append(
@@ -859,84 +862,49 @@ def _secret_request_redirect(user_input: str) -> str | None:
 
 
 def _build_request_tool_plan(user_input: str) -> dict[str, Any]:
-    lowered = user_input.lower()
-
-    reentry_markers = ("buy back", "buyback", "watch", "come down", "opportunity")
-    if "degen" in lowered and any(marker in lowered for marker in reentry_markers):
-        return {
-            "mode": "tracked_token_reentry_watch",
-            "focus": "token price first, then one compact re-entry check",
-            "stages": [
-                {"trust_get_token_price"},
-                {"trade_decision_engine", "get_swing_setup"},
-            ],
-            "deferred": ["market report", "whale scan", "smart money scan", "manual structure/indicator fanout", "alerts"],
-        }
-
-    if any(phrase in lowered for phrase in ("sell remaining", "swap remaining", "transfer remaining")) and "degen" in lowered:
-        return {
-            "mode": "sell_remaining_tracked",
-            "focus": "direct tracked-token balance and execution prep",
-            "stages": [
-                {"get_tracked_token_balance"},
-                {"trust_get_swap_quote", "swap_tokens", "transfer_tokens"},
-            ],
-            "deferred": ["wallet summary", "recent history", "alerts", "risk/market scan"],
-        }
-
-    if "should i sell" in lowered:
-        return {
-            "mode": "sell_decision",
-            "focus": "direct token balance and price",
-            "stages": [
-                {"get_tracked_token_balance"},
-                {"trust_get_token_price"},
-            ],
-            "deferred": ["recent history", "alerts", "risk/market scan"],
-        }
-
-    if "degen" in lowered and any(phrase in lowered for phrase in ("where is", "balance", "position", "holdings")):
-        return {
-            "mode": "tracked_token_position",
-            "focus": "direct tracked-token balance",
-            "stages": [
-                {"get_tracked_token_balance"},
-                {"trust_get_token_price"},
-            ],
-            "deferred": ["wallet-wide portfolio scan", "recent history", "alerts", "risk/market scan"],
-        }
-
-    if any(word in lowered for word in ("wallet", "portfolio")):
-        return {
-            "mode": "wallet_status",
-            "focus": "wallet summary and tracked balances",
-            "stages": [
-                {"get_wallet_balance"},
-                {"get_tracked_token_balance"},
-            ],
-            "deferred": ["price lookup", "recent history", "alerts", "risk/market scan"],
-        }
-
-    return {
-        "mode": "default",
-        "focus": "",
-        "stages": [],
-        "deferred": [],
-    }
+    return build_intent_tool_policy(user_input)
 
 
 def _tool_plan_guard_message(
     request_tool_plan: dict[str, Any],
     tool_name: str,
     tool_calls_executed: int,
+    tool_input: dict[str, Any] | None = None,
 ) -> str | None:
+    if is_live_execution_tool(tool_name) and not request_tool_plan.get("allow_live_execution", False):
+        return (
+            f"Tool policy blocked `{tool_name}`. "
+            "Live execution is disabled for this request. Gather watchlist or execution-prep evidence only, "
+            "then route any eventual execution through the explicit trading-control gate after human confirmation."
+        )
+
+    max_tool_calls = int(request_tool_plan.get("max_tool_calls") or 0)
+    if max_tool_calls > 0 and tool_calls_executed >= max_tool_calls:
+        focus = request_tool_plan.get("focus") or "the current request"
+        return (
+            f"Planner stop condition reached for {focus}. "
+            "Enough evidence has been gathered for this intent. Answer with the narrow results already collected "
+            "instead of calling more tools."
+        )
+
+    allowed_tools = request_tool_plan.get("allowed_tools") or set()
+    if allowed_tools and tool_name not in allowed_tools:
+        deferred = ", ".join(request_tool_plan.get("deferred") or [])
+        focus = request_tool_plan.get("focus") or "the most important checks"
+        deferred_suffix = f" Deferred for now: {deferred}." if deferred else ""
+        return (
+            f"Intent policy blocked `{tool_name}`. "
+            f"Focus first on {focus}.{deferred_suffix} "
+            "Use the narrow tool plan instead of branching into broader scans."
+        )
+
     stages = request_tool_plan.get("stages") or []
     if not stages:
         return None
 
     stage_index = min(tool_calls_executed, len(stages) - 1)
-    allowed_tools = stages[stage_index]
-    if tool_name in allowed_tools:
+    stage_allowed_tools = stages[stage_index]
+    if tool_name in stage_allowed_tools:
         return None
 
     deferred = ", ".join(request_tool_plan.get("deferred") or [])

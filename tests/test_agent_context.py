@@ -160,6 +160,7 @@ def test_request_tool_plan_prefers_compact_reentry_flow_for_degen_watch_request(
     assert plan["mode"] == "tracked_token_reentry_watch"
     assert plan["stages"][0] == {"trust_get_token_price"}
     assert plan["stages"][1] == {"trade_decision_engine", "get_swing_setup"}
+    assert plan["max_tool_calls"] == 2
 
 
 def test_tool_plan_guard_defers_unrelated_scan_for_sell_remaining():
@@ -168,8 +169,27 @@ def test_tool_plan_guard_defers_unrelated_scan_for_sell_remaining():
     message = _tool_plan_guard_message(plan, "check_onchain_risk", tool_calls_executed=0)
 
     assert message is not None
-    assert "deferred `check_onchain_risk`" in message
+    assert "Intent policy blocked `check_onchain_risk`" in message
     assert "direct tracked-token balance and execution prep" in message
+
+
+def test_tool_plan_guard_stops_after_enough_reentry_evidence():
+    plan = _build_request_tool_plan("watch DEGEN price to come down then buy back in")
+
+    message = _tool_plan_guard_message(plan, "get_pro_indicators", tool_calls_executed=2)
+
+    assert message is not None
+    assert "Planner stop condition reached" in message
+    assert "Enough evidence has been gathered" in message
+
+
+def test_tool_plan_guard_blocks_live_execution_for_sell_remaining_without_gate():
+    plan = _build_request_tool_plan("sell remaining DEGEN")
+
+    message = _tool_plan_guard_message(plan, "swap_tokens", tool_calls_executed=1)
+
+    assert message is not None
+    assert "Live execution is disabled for this request" in message
 
 
 def test_tool_budget_guard_result_describes_partial_results():
@@ -601,6 +621,100 @@ def test_degen_watch_request_blocks_market_report_fanout(monkeypatch):
     response = agent.chat("continue to look for opportunity or watch DEGEN price to come down then buy back in")
 
     assert response == "I’m watching DEGEN with price-first staging and deferred the broader scans."
+    assert executed == []
+
+
+def test_degen_watch_request_blocks_whale_smart_money_and_indicator_fanout(monkeypatch):
+    class FakeClient:
+        model = "fake"
+
+        def __init__(self):
+            self.calls = 0
+
+        def create_message(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(
+                    content=[SimpleNamespace(type="tool_use", name="trust_get_token_price", input={"token_symbol": "DEGEN", "chain": "base"}, id="tool-1")]
+                )
+            if self.calls == 2:
+                return SimpleNamespace(
+                    content=[SimpleNamespace(type="tool_use", name="check_whale_activity", input={"token_address": "0xdegen"}, id="tool-2")]
+                )
+            if self.calls == 3:
+                return SimpleNamespace(
+                    content=[SimpleNamespace(type="tool_use", name="check_smart_money_holdings", input={"chain": "base"}, id="tool-3")]
+                )
+            if self.calls == 4:
+                return SimpleNamespace(
+                    content=[SimpleNamespace(type="tool_use", name="get_pro_indicators", input={"symbol": "DEGEN"}, id="tool-4")]
+                )
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text="I kept the DEGEN watch narrow and deferred broad scan fanout.")]
+            )
+
+    fake_client = FakeClient()
+    executed = []
+
+    monkeypatch.setattr(agent_module, "create_client", lambda provider: fake_client)
+    monkeypatch.setattr(
+        agent_module,
+        "get_tool_definitions",
+        lambda: [
+            {"name": "trust_get_token_price"},
+            {"name": "check_whale_activity"},
+            {"name": "check_smart_money_holdings"},
+            {"name": "get_pro_indicators"},
+            {"name": "trade_decision_engine"},
+        ],
+    )
+    monkeypatch.setattr(agent_module, "latest_summary", lambda sid: None)
+    monkeypatch.setattr(agent_module, "save_session_for_provider", lambda *args, **kwargs: None)
+    monkeypatch.setattr(agent_module, "execute_tool", lambda name, raw_input: executed.append((name, raw_input)) or "ok")
+
+    agent = Agent(provider=ModelProvider.ANTHROPIC, sid="test", history=[])
+
+    response = agent.chat("continue to look for opportunity or watch DEGEN price to come down then buy back in")
+
+    assert response == "I kept the DEGEN watch narrow and deferred broad scan fanout."
+    assert executed == [("trust_get_token_price", {"token_symbol": "DEGEN", "chain": "base"})]
+
+
+def test_insider_hunt_request_blocks_live_execution_and_stays_watchlist_only(monkeypatch):
+    class FakeClient:
+        model = "fake"
+
+        def __init__(self):
+            self.calls = 0
+
+        def create_message(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(
+                    content=[SimpleNamespace(type="tool_use", name="swap_tokens", input={"chain": "base", "amount": "10", "from_token": "USDC", "to_token": "DEGEN", "execute": True}, id="tool-1")]
+                )
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text="I kept Insider Hunt in watchlist mode and did not execute anything.")]
+            )
+
+    fake_client = FakeClient()
+    executed = []
+
+    monkeypatch.setattr(agent_module, "create_client", lambda provider: fake_client)
+    monkeypatch.setattr(
+        agent_module,
+        "get_tool_definitions",
+        lambda: [{"name": "hunt_insider_wallets"}, {"name": "verify_alpha_wallet"}, {"name": "swap_tokens"}],
+    )
+    monkeypatch.setattr(agent_module, "latest_summary", lambda sid: None)
+    monkeypatch.setattr(agent_module, "save_session_for_provider", lambda *args, **kwargs: None)
+    monkeypatch.setattr(agent_module, "execute_tool", lambda name, raw_input: executed.append((name, raw_input)) or "ok")
+
+    agent = Agent(provider=ModelProvider.ANTHROPIC, sid="test", history=[])
+
+    response = agent.chat("run Insider Hunt on Base and find alpha wallets")
+
+    assert response == "I kept Insider Hunt in watchlist mode and did not execute anything."
     assert executed == []
 
 
