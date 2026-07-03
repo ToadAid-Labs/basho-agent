@@ -5,11 +5,13 @@ import json
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import core.auth as auth
+import backend.app as backend_app
 from backend.app import app
 
 
 def login(client):
-    return client.post("/login", data={"password": "admin123"})
+    backend_app.DASHBOARD_PASSWORD = "test-dashboard-password"
+    return client.post("/login", data={"password": "test-dashboard-password"})
 
 
 def test_google_auth_redirects_with_state(monkeypatch):
