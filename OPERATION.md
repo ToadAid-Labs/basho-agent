@@ -141,7 +141,7 @@ Real on-chain operations (Transfer/Swap) must use the saved/local TWAK credentia
 The Web Dashboard is now password-protected and enhanced with AI features.
 
 - **URL**: `http://localhost:5000`
-- **Authentication**: Enter the password defined in your `.env` file (`DASHBOARD_PASSWORD`). Default is `admin123`.
+- **Authentication**: Enter the password defined in your `.env` file (`DASHBOARD_PASSWORD`). Do not use a default password for any public or live run.
 - **Access**: After login, enter your Telegram ID to view your customized dashboard.
 
 ### 🔮 AI & Machine Learning Features

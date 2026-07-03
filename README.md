@@ -1,3 +1,13 @@
+# Basho Agent — Legacy Educational Reference
+
+> Public notice: this repository is preserved for learning, history, and public builder reference only.
+> It is not the active ToadAid trading system, not financial advice, and should not be used with real funds, real wallet keys, or unattended automation.
+> Active governed trading/agent work has moved to ToadAid Coder and newer Mirror/ToadAid governance lanes.
+
+See [PUBLIC_NOTICE.md](./PUBLIC_NOTICE.md).
+
+---
+
 # 🤖 AI Trading Bot & Educational Hub
 
 An autonomous, multi-agent AI trading system built for open-source education and treasury management research. Powered by the **ToadAid Mission** for stillness, wisdom, and clarity in the Web3 world.
