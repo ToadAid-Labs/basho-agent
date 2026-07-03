@@ -8,6 +8,7 @@ from flask import Flask, flash, jsonify, render_template, request, redirect, url
 from flask_cors import CORS
 from typing import Optional
 import os
+import secrets
 import sys
 import json
 import logging
@@ -70,9 +71,9 @@ CORS(app)
 app.register_blueprint(api_bp)
 
 # Configure app
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY') or secrets.token_hex(32)
 app.config['JSON_SORT_KEYS'] = False
-DASHBOARD_PASSWORD = os.getenv('DASHBOARD_PASSWORD', 'admin123')
+DASHBOARD_PASSWORD = os.getenv('DASHBOARD_PASSWORD')
 
 # Auth decorator
 def login_required(f):
@@ -150,7 +151,7 @@ def login():
     next_url = request.args.get('next', url_for('index'))
     if request.method == 'POST':
         password = request.form.get('password')
-        if password == DASHBOARD_PASSWORD:
+        if DASHBOARD_PASSWORD and password == DASHBOARD_PASSWORD:
             session['logged_in'] = True
             return redirect(next_url)
         return render_template('login.html', error='Invalid password', next=next_url)
